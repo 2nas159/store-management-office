@@ -238,7 +238,8 @@ actions cannot be approved yet.
 Auto approve rules let small, safe drafts go out without you: "refunds under 30 USD, at most 200
 USD a day", or "replies from the order status routine through Gmail, at most 20 a day". A draft
 is sent by rule only when every action on its list fits a rule with room left under that rule's
-daily cap; anything else waits as before, and the card says why. On those runs the gate is
+daily cap; anything else waits as before, and the card says why. A draft you sent back with
+REJECT always waits for you after its rework. On those runs the gate is
 stricter: a call whose input does not show the listed amount and recipient is blocked. Rules
 live in `<brain>/Agents Office/approvals.json`; every rule needs a daily cap. They show under
 the **Waiting** chip with today's use, PAUSE, DELETE and one switch for all. Tell a

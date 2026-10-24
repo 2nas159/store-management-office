@@ -575,6 +575,9 @@ await step('approvals: an approved draft writes the ledger first, names its rule
     if (r2.auto || t2.autoApproved || t2.autoWhy !== 'a1: Small refunds is at 20.00 of 30.00 USD today') throw new Error('second draft: ' + JSON.stringify(t2));
     const doc = ap.load(brain), list = ap.withUse(doc, ap.loadLedger(data));
     if (list[0].use !== '20.00 of 30.00 USD today' || !/up to 30\.00 USD each · at most 30\.00 USD a day/.test(list[0].desc)) throw new Error('panel text: ' + JSON.stringify(list[0]));
+    const t3 = { ...t, id: 't3', actions: [{ ...t.actions[0], amount: 1, rule: undefined }] }; delete t3.autoApproved; fs.writeFileSync(ap.file(brain), JSON.stringify({ rules: [RULES[0]] })); // room again, but…
+    if (ap.afterDraft(t3, { brainPath: brain, dataDir: data, reworked: true }).auto || t3.autoWhy !== 'you sent this one back, so its rework waits for you') throw new Error('a rework after REJECT went by rule: ' + JSON.stringify(t3)); // …a rework after REJECT waits for the owner
+    if (ap.loadLedger(data).entries.length !== 1) throw new Error('a rework that waits must not use the cap');
     ap.saveLedger(data, { entries: [{ rule: 'x', amount: 1, at: Date.now() - 9 * 864e5 }, ...ap.loadLedger(data).entries] }); if (ap.loadLedger(data).entries.length !== 1) throw new Error('entries older than 8 days are kept');
     return 'ledger written · rule on the action · note line · the next draft waits at 20.00 of 30.00 USD · old ledger lines drop';
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
@@ -639,8 +642,8 @@ await step('review: a recipient matches as a whole value, a manual approve keeps
 await step('toolclass: names place a tool as read or write, unknown counts as write, your lists decide first, Chrome looks only', async () => { // AC-2, AC-3
   const tc = await import('./src/toolclass.js');
   const t = (n, g, i) => tc.classify(n.startsWith('mcp__') ? n : 'mcp__x__' + n, g, i).cls;
-  const read = ['search_threads', 'get_message', 'agents_get', 'graphql_query', 'list_post_templates', 'get_snapshot_schedule', 'get_agent_run', 'get-inventory-levels', 'listEvents', 'slack_read_channel'];
-  const write = ['send_message', 'agents_create', 'graphql_mutation', 'get_or_create_x', 'create_post', 'post_message', 'run_sql', 'get-create-design-async-job', 'refund_create', 'trash_message', 'export-design', 'graphql_schema', 'frobnicate'];
+  const read = ['search_threads', 'get_message', 'agents_get', 'graphql_query', 'graphql_schema', 'list_post_templates', 'get_snapshot_schedule', 'get_agent_run', 'get-inventory-levels', 'listEvents', 'slack_read_channel', 'netlify-project-services-reader'];
+  const write = ['send_message', 'agents_create', 'graphql_mutation', 'get_or_create_x', 'create_post', 'post_message', 'run_sql', 'get-create-design-async-job', 'refund_create', 'trash_message', 'export-design', 'netlify-project-services-updater', 'restart_postgres_endpoint', 'select_workspace', 'frobnicate'];
   for (const n of read) if (t(n) !== 'read') throw new Error(n + ' should read: ' + JSON.stringify(tc.classify('mcp__x__' + n)));
   for (const n of write) if (t(n) !== 'write') throw new Error(n + ' should write: ' + JSON.stringify(tc.classify('mcp__x__' + n)));
   if (!tc.classify('mcp__x__frobnicate').unknown) throw new Error('no verb must be marked unknown');

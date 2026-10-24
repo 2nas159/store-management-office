@@ -109,7 +109,7 @@ The server re-reads the file every 20 seconds, so a routine lands without a rest
 
 ## Auto approve rules: small, safe actions go out without waiting (store fork, spec 0002)
 
-When the owner says "auto approve refunds under $30", "let replies from the order status routine go out on their own", "stop waiting for me on …", that is a **rule**. A draft that waits for the OK lists its outbound actions (kind, to, amount, tool); when **every** action fits a rule with room left under the rule's daily cap, the office sends it by itself through the same gated run as APPROVE. Anything else waits as before, and the card says why.
+When the owner says "auto approve refunds under $30", "let replies from the order status routine go out on their own", "stop waiting for me on …", that is a **rule**. A draft that waits for the OK lists its outbound actions (kind, to, amount, tool); when **every** action fits a rule with room left under the rule's daily cap, the office sends it by itself through the same gated run as APPROVE. Anything else waits as before, and the card says why. A draft the owner sent back with REJECT always waits for them after its rework.
 
 **Where:** `<brain>/Agents Office/approvals.json`. Create it with `{"paused": false, "rules": []}` if it does not exist. Never write rules anywhere else.
 

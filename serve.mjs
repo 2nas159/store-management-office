@@ -452,7 +452,7 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
         Object.assign(task, { result: d.body, draft: d.body, actions: d.actions, actionsRead: d.actionsRead, ...(d.actionsWhy ? { actionsWhy: d.actionsWhy } : {}) });
         task.state = 'waiting'; task.waitingAt = Date.now(); task.ask = routines.askLine(task);
         console.log(`  ↳ ${task.id} actions ${d.actionsRead === 'ok' ? actions.summary(d.actions) : 'unreadable: ' + d.actionsWhy}`);
-        const au = approvals.afterDraft(task, { brainPath: BRAIN, dataDir: DATA, sdk: !!sdk }); // STORE spec 0002: every action fits a rule with room left → sent by rule (ledger written first)
+        const au = approvals.afterDraft(task, { brainPath: BRAIN, dataDir: DATA, sdk: !!sdk, reworked: !!feedback }); // STORE spec 0002: every action fits a rule with room left → sent by rule (ledger written first); a rework after REJECT waits for you
         if (au.auto) { Object.assign(task, { state: 'doing', startedAt: Date.now(), approving: true }); delete task.ask; console.log(`  ⚡ ${task.id} approved by rule: ${task.autoApproved.rules.map(r => r.title).join(', ')}`); }
         else if (au.why) console.log(`  ↳ ${task.id} waits for you: ${au.why}`);
       }
