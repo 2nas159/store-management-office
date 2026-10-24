@@ -19,7 +19,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | F | Connectors, browser, models and usage | Existing | existing |
 | 1 | Steady smoke checks | Foundation | in-progress |
 | 2 | Routines for every department | Slice 1 | in-progress |
-| 3 | Outbound action list on drafts | Slice 2 | planned |
+| 3 | Outbound action list on drafts | Slice 2 | in-progress |
 | 4 | Auto approve rules | Slice 3 | planned |
 
 ## Already there
@@ -58,10 +58,18 @@ Marketing, Operations and Delivery get routines too, so daily posts, inventory c
 
 ## Slice 2: Outbound actions
 
-### 3. Outbound action list on drafts · needs a decision
+### 3. Outbound action list on drafts · in-progress
 Today a draft that waits for the OK is free text, so nothing can tell a $12 refund from a $900 one. The draft step should also name each outbound action it wants to take (what kind, to whom, how much), so a rule can read it and the owner can see it at a glance.
+spec [0001](../specs/0001-outbound-action-list-drafts.md)
 **Done when:** every draft waiting for the OK carries a list of the outbound actions it will take, the panel shows them, and approving runs exactly those actions and no others.
-- [ ] Design it (spec): `/architect outbound action list on drafts`
+- [x] Design it (spec): `/architect outbound action list on drafts`
+- [ ] Build it: `/develop outbound action list on drafts`
+  - [ ] Draft side thread: actions block parsed and validated, card lines and row totals (AC-1, AC-2, AC-5, AC-6)
+  - [ ] Approve side thread: call gate, short approve run, outcomes from real calls, empty list path (AC-7, AC-8, AC-9)
+  - [ ] Unreadable and recovery: locked approve, old drafts, restart close out (AC-3, AC-4, AC-12, AC-15)
+  - [ ] The rest: brain note section, rework, teams, missing connectors, argument matching (AC-9, AC-10, AC-11, AC-13, AC-14)
+- [ ] Verify it: `/check verify outbound action list on drafts`
+- [ ] Test it: `/test outbound action list on drafts`
 
 ## Slice 3: Approval rules
 
@@ -76,6 +84,9 @@ Out of scope for this build pass, kept so the plan stays honest.
 - **Shopify event triggers**: a new order, low stock, a refund request or a bad review starts a task · needs a decision
 - **Brain health routine**: the vault linter runs weekly and reports in the office; easy once feature 2 ships
 - **More seats or a seventh department**: beyond the fixed 35 desks · needs a decision
+- **Gate the draft run too**: draft runs still hold every connector and rely on the prompt not to send; needs a read only classification of connector tools · needs a decision · from spec 0001
+- **Approvable browser actions**: how an approved Chrome action is bounded (call budget, allowed site, final submit check) · needs a decision · from spec 0001
+- **Per action approval and retry**: untick single actions, and approve the not done remainder again, on the 0001 schema · from spec 0001
 
 ## Legend
 
