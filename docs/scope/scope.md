@@ -20,7 +20,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 1 | Steady smoke checks | Foundation | in-progress |
 | 2 | Routines for every department | Slice 1 | in-progress |
 | 3 | Outbound action list on drafts | Slice 2 | in-progress |
-| 4 | Auto approve rules | Slice 3 | planned |
+| 4 | Auto approve rules | Slice 3 | in-progress |
 
 ## Already there
 
@@ -73,10 +73,20 @@ spec [0001](../specs/0001-outbound-action-list-drafts.md) · code in `actions.mj
 
 ## Slice 3: Approval rules
 
-### 4. Auto approve rules · needs a decision · GA
+### 4. Auto approve rules · GA
 Rules the owner writes (for example: refunds under $30, discounts up to 10%, replies to order status questions) approve matching actions straight away; anything else, or anything the rule cannot read, waits as it does today. Money moves on these, so it gets the full review.
 **Done when:** a matching action goes out without waiting and its note says which rule approved it; a non matching or unreadable action waits; a rule can be paused; every auto approval shows in the panel and in the brain note.
-- [ ] Design it (spec): `/architect auto approve rules`
+spec [0002](../specs/0002-auto-approve-rules.md)
+- [x] Design it (spec): `/architect auto approve rules`
+- [ ] Build it: `/develop auto approve rules`
+  - [ ] Thread: rules file, match and daily caps, auto approve through the gated run, ledger, note line (AC-1 to AC-5, AC-7)
+  - [ ] Strict gate: per action slots, arguments must match on auto runs (AC-6)
+  - [ ] Panel: rules under Waiting with use and pause, why a draft waits, the endpoints (AC-8, AC-10)
+  - [ ] Chat and docs: a lead turns a sentence into a rule on "yes", list, pause, delete; CLAUDE.md (AC-9, AC-11)
+- [ ] Verify it: `/check verify auto approve rules`
+- [ ] Test it: `/test auto approve rules`
+- [ ] Review it: `/check review auto approve rules`
+- [ ] Document it: `/document auto approve rules`
 
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
