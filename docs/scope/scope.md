@@ -98,7 +98,7 @@ spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, 
   - [x] Classifier: names plus the owner's overrides, the table command, counts in the check (AC-3, AC-4)
   - [x] Read mode in the gate for drafts, team pieces and read-only routines (AC-1, AC-2, AC-5, AC-7, AC-8)
   - [x] The card, row and note show blocks; rules refuse a blocked or ungated draft (AC-5, AC-6)
-- [ ] Verify it: `/check verify gate the draft run`
+- [x] Verify it: `/check verify gate the draft run`
 - [ ] Test it: `/test gate the draft run`
 - [ ] Review it: `/check review gate the draft run`
 - [ ] Document it: `/document gate the draft run`
