@@ -22,6 +22,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Outbound action list on drafts | Slice 2 | in-progress |
 | 4 | Auto approve rules | Slice 3 | in-progress |
 | 5 | Gate the draft run | Slice 3 | in-progress |
+| 6 | Shopify event triggers | Slice 4 | in-progress |
 
 ## Already there
 
@@ -103,10 +104,26 @@ spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, 
 - [x] Review it: `/check review gate the draft run` (in session, 24 Oct: not a fresh-context review; two money-path bugs found and fixed)
 - [x] Document it: `/document gate the draft run`
 
+## Slice 4: The store starts the work
+
+### 6. Shopify event triggers · GA
+A new order, low stock, a return request, a cancellation or a refund in the store starts the right draft within minutes, through the same read-only gate, action list and rules as routines. The office polls the Admin API with its own read-only app; customer free text stays out of the prompt by default.
+spec [0004](../specs/0004-shopify-event-triggers.md)
+**Done when:** each of the five events, set in triggers.json, starts one batched task per check within its daily cap; nothing starts twice or on the first check; the office's Shopify access is read-only and checked; a problem with Shopify shows in plain words in the panel.
+- [x] Design it (spec): `/architect shopify event triggers`
+- [ ] Build it: `/develop shopify event triggers`
+  - [ ] Facts and the client: token flow, read scopes, API version confirmed; shopify.mjs (AC-1, AC-7, AC-9)
+  - [ ] Thread: return requests end to end, batching, cap, structured EVENTS text (AC-2 to AC-6)
+  - [ ] The other events: orders created, cancelled, refunded; low stock; first check; catch-up (AC-2)
+  - [ ] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)
+- [ ] Verify it: `/check verify shopify event triggers`
+- [ ] Test it: `/test shopify event triggers`
+- [ ] Review it: `/check review shopify event triggers`
+- [ ] Document it: `/document shopify event triggers`
+
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
 - **Store numbers panel**: revenue, average order, conversion, low stock and open tickets from Shopify in the office · needs a decision
-- **Shopify event triggers**: a new order, low stock, a refund request or a bad review starts a task · needs a decision
 - **Brain health routine**: the vault linter runs weekly and reports in the office; easy once feature 2 ships
 - **More seats or a seventh department**: beyond the fixed 35 desks · needs a decision
 - **Approvable browser actions**: how an approved Chrome action is bounded (call budget, allowed site, final submit check) · needs a decision · from spec 0001
