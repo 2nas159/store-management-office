@@ -12,6 +12,10 @@ machine.
 
 **Beta.** It works end to end. Expect rough edges and tell us about them in Issues.
 
+**Changed copy.** This is a changed copy of Agents Office (https://github.com/ajsahni/agents-office),
+modified by Ömer Aktay to run one Shopify store: routines for every department and related check
+updates. It is not the original and is not maintained by Sahni.ai.
+
 **License, in plain English:** Agents Office is a Sahni.ai product. It is free for personal and
 internal use. You may not sell it, resell it, or build a paid product on it. You may not rename it,
 rebrand it, strip the Sahni.ai mark or the notices, present it as your own, or wire it into or bundle
