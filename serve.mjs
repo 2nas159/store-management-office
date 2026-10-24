@@ -70,6 +70,7 @@ const RUN_TIMEOUT = Math.max(60, +cfg.timeout || 300) * 1000; // agents with too
 { const e = normEffort(cfg.effort); if (cfg.effort && !e) console.warn(`config: effort must be low, medium, high, xhigh or max (got "${cfg.effort}") — using the model's own`); cfg.effort = e || ''; } // V3.6.1: the office's effort, empty = the model's own
 for (const w of cfg.problems || []) console.warn('config:', w);
 mcp.configure(cfg);
+mcp.remember(path.join(DATA, 'connectors.json')); // STORE (24 Oct 2026): the claude.ai connectors a run reported survive a restart (claude mcp list does not show them)
 const TEAMS = teams.settings(cfg); // V3.2 (16 Sep): { enabled, max }
 const roster = loadRoster(BRAIN);
 const AGENTS = roster.agents; // id · department · lead · name · role · does · tools · brief

@@ -3,6 +3,7 @@
 //
 //   discover()          → `claude mcp list`, parsed: every server, its status, the tool id
 //   fromInit(servers)   → refresh statuses from a run's `system init` event (free, every task)
+//   remember(file)      → STORE: keep what runs reported in data/connectors.json; discover() adds to it, never wipes it
 //   allowedTools()      → the --allowedTools list an agent gets (connected · allow/deny · web · browser)
 //   cliArgs()           → --chrome / --no-chrome for every `claude -p` the office starts (V3.2 (16 Sep))
 //   summary()           → what /api/mcp returns and what the top bar draws
@@ -59,6 +60,10 @@ const STATUS = { '✔': 'connected', '✓': 'connected', '!': 'needs-auth', '✗
 
 let servers = [];        // the last discovery, enriched by fromInit()
 let discoveredAt = 0;
+// STORE (24 Oct 2026): `claude mcp list` does not show the claude.ai connectors; only a run's init does. What runs report
+// is kept here and in data/connectors.json (remember()), so a fresh list or a restart does not lose them: id → { name, status, tools, at }
+const learned = new Map();
+let memFile = null;
 let cfgMcp = { allow: [], deny: [], departments: {} };
 let cfgWeb = true;
 let cfgBrowser = true; // V3.2 (16 Sep): Claude in Chrome for the agents
@@ -106,7 +111,24 @@ function browserServer(prev) {
   s.name = 'Chrome'; s.key = 'chrome'; s.source = 'chrome'; s.browser = true; s.tools = prev?.tools || [];
   return s;
 }
-const withBrowser = list => { const rest = list.filter(s => s.id !== BROWSER); return cfgBrowser ? [...rest, browserServer(list.find(s => s.id === BROWSER))] : rest; };
+const withBrowser = (list, prev) => { const rest = list.filter(s => s.id !== BROWSER); return cfgBrowser ? [...rest, browserServer(list.find(s => s.id === BROWSER) || prev)] : rest; };
+// STORE: a discovery adds to what runs reported instead of replacing it (the tools a run listed stay on the server too)
+function merge(list) {
+  for (const s of list) { const l = learned.get(s.id); if (l && !s.tools.length && l.tools?.length) s.tools = l.tools; }
+  for (const [id, l] of learned) if (!list.some(s => s.id === id)) { const s = make(l.name, '', l.status); s.tools = l.tools || []; s.learned = true; list.push(s); }
+  return list;
+}
+export function applyList(list) { servers = withBrowser(merge(list), servers.find(s => s.id === BROWSER)); discoveredAt = Date.now(); return servers; }
+function saveLearned() {
+  if (!memFile) return;
+  try { fs.mkdirSync(path.dirname(memFile), { recursive: true }); fs.writeFileSync(memFile, JSON.stringify({ servers: [...learned.values()] }, null, 1)); } catch {}
+}
+// file: where to keep what runs reported (null forgets it all, for the checks)
+export function remember(file) {
+  memFile = file; learned.clear();
+  if (file) try { for (const e of JSON.parse(fs.readFileSync(file, 'utf8')).servers || []) if (e?.name && toolId(e.name) !== BROWSER) learned.set(toolId(e.name), { name: e.name, status: e.status, tools: Array.isArray(e.tools) ? e.tools : [], at: e.at }); } catch {}
+  servers = merge(servers.filter(s => !s.learned));
+}
 export const browserOn = () => cfgBrowser;
 export function cliArgs() { return cfgBrowser ? ['--chrome'] : ['--no-chrome']; } // explicit both ways: the login's "enabled by default" must not decide for the office
 
@@ -114,7 +136,7 @@ export function discover({ timeout = 45000 } = {}) {
   return new Promise(resolve => {
     const env = { ...process.env }; delete env.CLAUDECODE;
     let out = '', done = false;
-    const finish = list => { if (done) return; done = true; if (list) { servers = withBrowser(list); discoveredAt = Date.now(); } resolve(servers); };
+    const finish = list => { if (done) return; done = true; if (list) applyList(list); resolve(servers); };
     let p;
     try { p = spawn('claude', ['mcp', 'list'], { env, stdio: ['ignore', 'pipe', 'pipe'] }); } catch { return finish([]); }
     const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch {} finish(parseList(out)); }, timeout);
@@ -129,12 +151,17 @@ export function fromInit(init) {
   const tools = Array.isArray(init.tools) ? init.tools : [];
   for (const m of init.mcp_servers) {
     let s = servers.find(x => x.id === toolId(m.name));
-    if (!s) { if (m.name === BROWSER) { if (!cfgBrowser) continue; s = browserServer(null); } else s = make(m.name, '', 'connected'); servers.push(s); }
+    if (!s) { if (m.name === BROWSER) { if (!cfgBrowser) continue; s = browserServer(null); } else { s = make(m.name, '', 'connected'); s.learned = true; } servers.push(s); }
     if (m.status === 'connected' || m.status === 'needs-auth' || m.status === 'failed') s.status = m.status;
     else if (m.status === 'pending' && s.status !== 'connected') s.status = 'pending';
     const mine = tools.filter(t => t.startsWith(`mcp__${s.id}__`)).map(t => t.slice(s.id.length + 7));
     if (mine.length) { s.tools = mine; s.status = 'connected'; }
+    if (s.id !== BROWSER) learned.set(s.id, { name: m.name, status: s.status, tools: s.tools, at: Date.now() }); // STORE: kept across a fresh list and a restart
   }
+  // STORE: a remembered server this run no longer has is gone (removed from the account, or no longer served to runs)
+  const now = new Set(init.mcp_servers.map(m => toolId(m.name)));
+  for (const id of [...learned.keys()]) if (!now.has(id)) { learned.delete(id); servers = servers.filter(s => !(s.id === id && s.learned)); }
+  saveLearned();
   discoveredAt = discoveredAt || Date.now();
 }
 export function list() { return servers; }

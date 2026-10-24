@@ -127,6 +127,26 @@ await step('connectors: claude mcp list parses', async () => {
   if (l[1].status !== 'needs-auth' || l[1].key !== 'meta') throw new Error('meta: ' + JSON.stringify(l[1]));
   if (l[2].depts.length !== 2) throw new Error('playwright depts: ' + l[2].depts);
 });
+await step('connectors: what a run reports survives a fresh claude mcp list and a restart; a server a run no longer has is dropped', async () => { // STORE (24 Oct 2026)
+  const m = await import('./mcp.mjs'); const os = await import('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-mcp-')), file = path.join(tmp, 'data', 'connectors.json');
+  try {
+    m.configure({ mcp: {}, tools: { browser: false } }); m.remember(file);
+    m.applyList(m.parseList('playwright: npx -y @playwright/mcp@latest - ✔ Connected'));
+    m.fromInit({ mcp_servers: [{ name: 'playwright', status: 'connected' }, { name: 'claude.ai Gmail', status: 'connected' }], tools: ['mcp__claude_ai_Gmail__send_message', 'mcp__playwright__navigate'] });
+    const ids = () => m.usable().map(s => s.id).sort().join();
+    if (ids() !== 'claude_ai_Gmail,playwright') throw new Error('after the run: ' + ids());
+    m.applyList(m.parseList('playwright: npx -y @playwright/mcp@latest - ✔ Connected')); // the startup scan finishing after a run, or ?refresh=1
+    const g = m.usable().find(s => s.id === 'claude_ai_Gmail'); if (!g || g.tools.join() !== 'send_message') throw new Error('a fresh list wiped the connector a run reported: ' + ids());
+    if (m.usable().find(s => s.id === 'playwright').tools.join() !== 'navigate') throw new Error('a fresh list dropped the tools a run listed');
+    m.remember(null); m.applyList([]); if (ids()) throw new Error('forget did not clear: ' + ids());
+    m.remember(file); m.applyList(m.parseList('playwright: npx -y @playwright/mcp@latest - ✔ Connected')); // a restart: the file is read back
+    if (ids() !== 'claude_ai_Gmail,playwright' || m.allowedTools().join() !== 'mcp__playwright,mcp__claude_ai_Gmail,WebSearch,WebFetch') throw new Error('after a restart: ' + ids() + ' · ' + m.allowedTools());
+    m.fromInit({ mcp_servers: [{ name: 'playwright', status: 'connected' }], tools: ['mcp__playwright__navigate'] }); // Gmail was removed from the account
+    if (ids() !== 'playwright' || JSON.parse(fs.readFileSync(file, 'utf8')).servers.some(s => /Gmail/.test(s.name))) throw new Error('a server the run no longer has is still there: ' + ids());
+    return 'claude.ai Gmail kept through a fresh list and a restart · its tools kept · dropped once a run no longer has it';
+  } finally { m.remember(null); m.configure(cfg); fs.rmSync(tmp, { recursive: true, force: true }); }
+});
 
 /* ---------- 1c. routines (V3.5) ---------- */
 await step('routines: plain words become a schedule', async () => {
