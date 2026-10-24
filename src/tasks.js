@@ -141,6 +141,7 @@ export function initTasks(ctx) {
   let seq = 1;
   // V3.5 routines. Live: the server's list (polled). Demo: session-only, fired by this tick.
   const routines = []; let rseq = 1, polling = false, railAgent = null, railExp = false;
+  let rulesDoc = { paused: false, rules: [] }; // STORE (24 Oct 2026, spec 0002): the auto approve rules, from /api/approvals; shown under the Waiting chip
   const RT_DEPTS = ROUTINE_DEPTS; // STORE: was ['emails', 'fin', 'sales']
   const RT_NAMES = PROFILE ? Object.fromEntries(Object.entries(PROFILE.pods).map(([k, v]) => [k, titleCase(v)])) : { emails: 'Emails', fin: 'Accounting', sales: 'Sales', marketing: 'Marketing', ops: 'Operations', delivery: 'Delivery' };
   const rtRefuse = k => routineRefusal(k, RT_NAMES);
@@ -221,7 +222,7 @@ export function initTasks(ctx) {
       return;
     }
     chatPush(t.agent, { who: 'file', icon: t.error ? '⚠' : '📄', name: (t.note || slug(t.title)) + '.md',
-      meta: `${t.error ? 'could not complete' : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)} · click to view`, content: t.result, mock: t.live ? outcomesMock(t) : '' });
+      meta: `${t.error ? 'could not complete' : t.autoApproved ? `sent by rule ${ruleTitles(t)} · saved to your brain` : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)} · click to view`, content: t.result, mock: t.live ? outcomesMock(t) : '' });
     if (!t.error) chatPush(t.agent, { who: 'agent', text: `Done — "${t.title}"${t.routine ? ` (routine, ${t.when}${t.late ? ', ran late' : ''})` : ''} is ready above${t.team?.members?.length ? ` — the team was ${membersText(t)} and me` : ''}${t.read && t.read.length ? ` (I read ${t.read.slice(0, 3).join(', ')})` : ''}${t.used && t.used.length ? `. Used ${t.used.join(', ')}` : ''}. Say "revise: …" and I'll change it.` });
     feedPush(R[t.agent], '📄', `Delivered: ${t.title}`);
     if (brain && t.read) for (const n of t.read.slice(0, 2)) brain.readNote(t.agent, n);
@@ -557,8 +558,9 @@ export function initTasks(ctx) {
     if (!live || polling) return; polling = true;
     if (usageDue || ++pollN % 5 === 0) { usageDue = false; pollUsage(); }
     try {
-      const [rl, tl] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json())]);
+      const [rl, tl, al] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json()), fetch(API + '/approvals').then(r => r.json()).catch(() => null)]);
       if (Array.isArray(rl.routines)) setRoutines(rl.routines);
+      if (al && Array.isArray(al.rules)) setApprovals(al);
       if (Array.isArray(tl)) for (const st of tl) reconcile(st);
       if (calendar) calendar.refresh();
     } catch (e) { console.warn('office poll:', e.message); }
@@ -578,20 +580,22 @@ export function initTasks(ctx) {
     apply(t, st);
   }
   function copyResult(t, st) { t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.draft = st.draft; t.approved = !!st.approved; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
-    t.actions = st.actions; t.actionsRead = st.actionsRead; t.actionsWhy = st.actionsWhy; t.gateDenied = st.gateDenied; t.gateFailed = !!st.gateFailed; } // STORE spec 0001
+    t.actions = st.actions; t.actionsRead = st.actionsRead; t.actionsWhy = st.actionsWhy; t.gateDenied = st.gateDenied; t.gateFailed = !!st.gateFailed; // STORE spec 0001
+    t.autoApproved = st.autoApproved; t.autoWhy = st.autoWhy; } // STORE spec 0002: sent by rule, or why it waits
+  const ruleTitles = t => (t.autoApproved?.rules || []).map(r => r.title).join(', ');
   // STORE (spec 0001): the approval card's list of outbound actions, and what happened to each once approved
   const mkDoc = (head, rows) => `<div class="mk mk-doc"><div class="d-brand">${head}</div>${rows}</div>`;
   function actionsMock(t) {
-    const rd = readOf(t);
+    const rd = readOf(t), why = t.autoWhy ? `<div class="d-p tp-amber">Not sent by rule: ${esc(t.autoWhy)}.</div>` : ''; // STORE spec 0002
     if (!rd.ok) return mkDoc('OUTBOUND ACTIONS', `<div class="d-p tp-amber">Actions unreadable: ${esc(rd.why)}. APPROVE stays locked; send it back with REJECT to redraft it.</div>`);
-    if (!t.actions.length) return mkDoc('OUTBOUND ACTIONS', '<div class="d-p">Nothing goes out.</div>');
-    return mkDoc(`OUTBOUND ACTIONS · ${esc(actSummary(t.actions).toUpperCase())}`, cardLines(t.actions).map(l => `<div class="d-line"><span>${esc(l.head)}</span><b>${esc(l.money)}</b></div><div class="d-p">${esc(l.summary)} · ${esc(l.tool)}</div>`).join(''));
+    if (!t.actions.length) return mkDoc('OUTBOUND ACTIONS', '<div class="d-p">Nothing goes out.</div>' + why);
+    return mkDoc(`OUTBOUND ACTIONS · ${esc(actSummary(t.actions).toUpperCase())}`, cardLines(t.actions).map(l => `<div class="d-line"><span>${esc(l.head)}</span><b>${esc(l.money)}</b></div><div class="d-p">${esc(l.summary)} · ${esc(l.tool)}</div>`).join('') + why);
   }
   function outcomesMock(t) {
     if (!t.approved || !Array.isArray(t.actions)) return '';
     const rows = t.actions.map(a => { const o = a.outcome || {}; return `<div class="d-line"><span>${esc(`${a.id} · ${String(a.kind).replace(/_/g, ' ')} · to ${a.to}${actMoney(a) ? ' · ' + actMoney(a) : ''}`)}</span><b class="${o.status === 'done' ? '' : o.status === 'failed' ? 'tp-red' : 'tp-amber'}">${esc(STATUS_TEXT[o.status] || 'not run')}</b></div>` +
       (o.error ? `<div class="d-p">${esc(o.error)}</div>` : '') + (o.flag ? `<div class="d-p tp-amber">flag: ${esc(o.flag)}</div>` : ''); }).join('');
-    return mkDoc('WHAT WENT OUT', (rows || '<div class="d-p">Nothing went out, this draft had no outbound actions.</div>') +
+    return mkDoc(t.autoApproved ? `WHAT WENT OUT · BY RULE ${esc(ruleTitles(t).toUpperCase())}` : 'WHAT WENT OUT', (rows || '<div class="d-p">Nothing went out, this draft had no outbound actions.</div>') +
       (t.gateDenied?.length ? `<div class="d-p tp-amber">Blocked by the gate: ${esc(t.gateDenied.map(d => d.tool).join(', '))}</div>` : '') + (t.gateFailed ? '<div class="d-p tp-red">The gate did not run for every call. Check what went out.</div>' : ''));
   }
   // V3.2 (16 Sep): the server's team state → piece cards on the teammates' desks, notes as 💬, the lead's members list
@@ -637,7 +641,7 @@ export function initTasks(ctx) {
       copyResult(t, st); t.ready = true; t.running = true; usageDue = true;
       complete(t); t.doneAt = st.doneAt || t.doneAt; t.changedAt = t.doneAt; // straight to done here (the tick skips a stuck agent): the chat card, the note, the graph
       if (t.tools.length && onTools) onTools(t.agent, t.tools);
-      if (brain && !t.error) fetch(API + '/brain').then(r => r.json()).then(g => brain.setGraph(g)).catch(() => {});
+      if (live && brain && !t.error) fetch(API + '/brain').then(r => r.json()).then(g => brain.setGraph(g)).catch(() => {}); // STORE: live only (a file:// page has no /api)
     }
   }
   function askApproval(t) { // D1: the draft lands in the chat with APPROVE / REJECT and the agent stands and waves
@@ -700,7 +704,7 @@ export function initTasks(ctx) {
         if (st.state === 'done') {
           const t = mk({ agent: st.agent, title: st.title, text: st.text, plan: st.plan, by: 'you', live: true, sid: st.id, state: 'done',
             doneAt: st.doneAt, changedAt: st.doneAt, addedAt: st.addedAt, result: st.result, read: st.read, note: st.note, tools: st.tools || [], used: st.used || [], error: !!st.error, last: 'done',
-            approved: !!st.approved, actions: st.actions, gateDenied: st.gateDenied, gateFailed: !!st.gateFailed }); // STORE spec 0001: what went out shows on reload too
+            approved: !!st.approved, actions: st.actions, gateDenied: st.gateDenied, gateFailed: !!st.gateFailed, autoApproved: st.autoApproved }); // STORE spec 0001/0002: what went out, and by which rule, shows on reload too
           if (st.team) syncTeam(t, st, true);
           deliver(t);
         } else reconcile(st); // next, doing (the server may be running it), waiting for your OK, scheduled for a date — pick it up again
@@ -744,7 +748,7 @@ export function initTasks(ctx) {
       case 'doing': return `${who}${t.live ? (t.approved === undefined && t.draftAt ? ' · sending with Claude' : t.team?.members?.length ? ' · leading the team with Claude' : ' · working with Claude') : t.agent === 'vid' ? ' · rendering' : t.teamHold ? ' · waiting on the pieces' : ''}${t.routine ? ' · routine' : ''}${teamBit(t)}${modelBit(t)}`;
       case 'waiting': return `<span class="tp-amber">waiting ${span(now - t.changedAt)} for your tick</span> · ${who}${t.routine ? ' · routine draft' : ''}${t.live && t.draftAt ? ' · ' + (readOf(t).ok ? esc(actSummary(t.actions)) : '<span class="tp-amber">actions unreadable</span>') : ''}${teamBit(t)}${modelBit(t)}`; // STORE spec 0001: "3 actions · 912.00 USD"
       case 'scheduled': return `${who} · runs ${esc(untilText(t.dueAt))} · ${new Date(t.dueAt).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${timeStr(t.dueAt)}${t.needsOk ? ' · waits for your OK' : ''}${teamBit(t)}${modelBit(t)}`;
-      case 'done': return `${who} · done ${timeStr(t.doneAt)}${t.approved ? (t.live ? ' · sent after your OK' : ' · approved') : ''}${t.late ? ' · <span class="tp-late">ran late</span>' : ''}${teamBit(t)}${modelBit(t)}${t.live ? (t.error ? ' · <span class="tp-amber">failed</span>' : ' · <span class="tp-res">result ready →</span>') : ''}`;
+      case 'done': return `${who} · done ${timeStr(t.doneAt)}${t.autoApproved ? ` · <span class="tp-rule">⚡ approved by rule ${esc(ruleTitles(t))}</span>` : t.approved ? (t.live ? ' · sent after your OK' : ' · approved') : ''}${t.late ? ' · <span class="tp-late">ran late</span>' : ''}${teamBit(t)}${modelBit(t)}${t.live ? (t.error ? ' · <span class="tp-amber">failed</span>' : ' · <span class="tp-res">result ready →</span>') : ''}`;
     }
     return who;
   }
@@ -763,6 +767,25 @@ export function initTasks(ctx) {
       <div class="tp-body"><div class="tp-t">${esc(r.title)}</div><div class="tp-m">${esc(r.desc)} · ${a.name} · ${modelName(r.model || officeModel)}${r.needsOk ? ' · waits for your OK' : ' · read-only'}${r.lastAt ? ' · last ' + timeStr(r.lastAt) + (r.lastLate ? ' <span class="tp-late">late</span>' : '') : ''}</div>
       <div class="tp-act"><button class="run" data-act="run">RUN NOW</button><button data-act="${r.paused ? 'resume' : 'pause'}">${r.paused ? 'RESUME' : 'PAUSE'}</button><button data-act="delete">DELETE</button></div></div>
       <span class="tp-ago" data-rago="${r.id}">${r.paused ? 'PAUSED' : esc(untilText(r.nextAt))}</span></div>`;
+  }
+  // STORE (spec 0002): the auto approve rules under the Waiting chip — limits, today's use, PAUSE · RESUME · DELETE, one switch for all
+  function setApprovals(doc) { const was = JSON.stringify(rulesDoc); rulesDoc = { paused: !!doc.paused, rules: (doc.rules || []).slice() }; if (JSON.stringify(rulesDoc) !== was && filter === 'waiting') render(true); }
+  function rulesHTML() {
+    const { paused, rules: rl } = rulesDoc; if (!rl.length) return '';
+    return `<div class="tp-row rule head${paused ? ' paused' : ''}" data-rule="*"><span class="tp-st sched">⚡</span><div class="tp-body"><div class="tp-t">AUTO APPROVE · ${rl.length} rule${rl.length > 1 ? 's' : ''}${paused ? ' · ALL PAUSED' : ''}</div><div class="tp-m">A draft goes out on its own only when every action fits a rule with room left today.</div>
+      <div class="tp-act"><button data-ract="${paused ? 'resume' : 'pause'}">${paused ? 'RESUME ALL' : 'PAUSE ALL'}</button></div></div></div>` +
+      rl.map(r => `<div class="tp-row rule${r.paused || paused ? ' paused' : ''}" data-rule="${esc(r.id)}"><span class="tp-st sched">⚡</span><div class="tp-body"><div class="tp-t">${esc(r.title)}</div><div class="tp-m">${esc(r.desc || '')}${r.use ? ' · ' + esc(r.use) : ''}</div>
+      <div class="tp-act"><button data-ract="${r.paused ? 'resume' : 'pause'}">${r.paused ? 'RESUME' : 'PAUSE'}</button><button data-ract="delete">DELETE</button></div></div><span class="tp-ago">${r.paused ? 'PAUSED' : 'ON'}</span></div>`).join('');
+  }
+  async function ruleAct(id, act) {
+    if (live) {
+      const res = id === '*' ? await post(`/approvals/${act}`) : act === 'delete' ? await fetch(`${API}/approvals/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null) : await post(`/approvals/${encodeURIComponent(id)}/${act}`);
+      if (res && Array.isArray(res.rules)) setApprovals(res); render(true); return;
+    }
+    if (id === '*') rulesDoc.paused = act === 'pause'; // demo: the same moves, session only
+    else if (act === 'delete') rulesDoc.rules = rulesDoc.rules.filter(r => r.id !== id);
+    else { const r = rulesDoc.rules.find(x => x.id === id); if (r) r.paused = act === 'pause'; }
+    render(true);
   }
   function renderNext() { // C1: the next-up strip under the chips
     const n = nextOf(scopedRoutines());
@@ -794,8 +817,9 @@ export function initTasks(ctx) {
     const before = structural ? {} : rects();
     P_.rows.innerHTML = filter === 'sched'
       ? ((scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
-      : (list.map(rowHTMLp).join('') || `<div class="tp-empty">Nothing here right now.</div>`);
+      : (filter === 'waiting' ? rulesHTML() : '') + (list.map(rowHTMLp).join('') || `<div class="tp-empty">Nothing here right now.</div>`); // STORE spec 0002: the rules head the Waiting list
     renderNext();
+    P_.rows.querySelectorAll('[data-ract]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); ruleAct(b.closest('[data-rule]').dataset.rule, b.dataset.ract); }));
     P_.rows.querySelectorAll('.tp-act button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const row = b.closest('.tp-row'); if (row.dataset.rid) rtAct(row.dataset.rid, b.dataset.act); else if (b.dataset.act === 'cancel') cancelScheduled(tasks.find(t => String(t.id) === row.dataset.id)); else if (b.dataset.act === 'calendar' && calendar) calendar.open(); }));
     P_.rows.querySelectorAll('.tp-row.waiting').forEach(n => n.addEventListener('click', () => zoomToApproval(n.dataset.dept)));
     P_.rows.querySelectorAll('.tp-row.live.done').forEach(n => n.addEventListener('click', () => openAgent && openAgent(n.dataset.agent, 'chat')));
@@ -1034,5 +1058,5 @@ export function initTasks(ctx) {
   const calendar = initCalendar({ tasks, routines, agentOf, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, create: createScheduled, createRoutine: createRoutineAt, cancelTask: cancelScheduled, rtAct, openAgent: (id, tab) => openAgent && openAgent(id, tab), esc, isLive: () => live, officeModel: () => officeModel, MODEL_KEYS, modelName, business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
   return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, createScheduled, cancelScheduled,
            handleChat, addTask, revise, rowHTML, setDept, tasks, panelWidth: () => panel.offsetWidth, isLive: () => live,
-           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
+           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
 }

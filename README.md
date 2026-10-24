@@ -235,6 +235,17 @@ REJECT it for a redraft; a list that says nothing goes out approves without a Cl
 Amounts with no currency use `currency` in `office.config.json` (default `USD`). Browser
 actions cannot be approved yet.
 
+Auto approve rules let small, safe drafts go out without you: "refunds under 30 USD, at most 200
+USD a day", or "replies from the order status routine through Gmail, at most 20 a day". A draft
+is sent by rule only when every action on its list fits a rule with room left under that rule's
+daily cap; anything else waits as before, and the card says why. On those runs the gate is
+stricter: a call whose input does not show the listed amount and recipient is blocked. Rules
+live in `<brain>/Agents Office/approvals.json`; every rule needs a daily cap. They show under
+the **Waiting** chip with today's use, PAUSE, DELETE and one switch for all. Tell a
+department lead "auto approve …" and it reads the rule back, then turns it on when you say yes;
+"rules", "pause … rule" and "pause auto approvals" work there too. The brain note of a draft
+sent by rule says which rule approved it.
+
 The clock lives in the server: `npm start` has to be running, but the page does not have to be
 open. A run missed while the machine was asleep or the office was off is caught up once when it
 comes back, marked LATE; never more than one catch-up per routine. Every firing is a line in the

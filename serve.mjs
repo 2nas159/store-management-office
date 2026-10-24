@@ -53,6 +53,7 @@ import * as routines from './routines.mjs';
 import * as usage from './usage.mjs';
 import * as teams from './teams.mjs';
 import * as actions from './actions.mjs'; // STORE (24 Oct 2026): outbound action lists on drafts + the approve call gate (spec 0001)
+import * as approvals from './approvals.mjs'; // STORE (24 Oct 2026): auto approve rules (spec 0002)
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
 
@@ -333,7 +334,7 @@ function writeNote(task) { // the deliverable becomes a note in the brain, linke
   fs.mkdirSync(NOTES_DIR, { recursive: true });
   const a = AGENTS.find(x => x.id === task.agent);
   const name = `${new Date(task.doneAt).toISOString().slice(0, 10)} ${slug(task.title)}`;
-  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
+  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && task.autoApproved ? '\n' + approvals.noteLines(task) : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
     `# ${task.title}\n\n${task.result}\n\n${task.approved && Array.isArray(task.actions) ? actions.noteSection(task.actions, task) + '\n' : ''}---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf); // STORE spec 0001: what went out, per action
   fs.writeFileSync(path.join(NOTES_DIR, name + '.md'), body);
   return name;
@@ -365,6 +366,39 @@ function loadRoutines() { // re-read from disk every time: a routine written by 
   return list;
 }
 const routinesOut = () => { const list = loadRoutines(); return { routines: list, depts: routines.ALLOWED, path: rlist.path, problems: rlist.problems }; };
+// STORE (spec 0002): the auto approve rules as the panel and the chat see them — the owner's file, today's use from the ledger
+const approvalsOut = () => { const d = approvals.load(BRAIN); return { paused: d.paused, rules: approvals.withUse(d, approvals.loadLedger(DATA)), problems: d.problems, path: d.path }; };
+const pendingRule = new Map(); // lead id → { rule, at }: a rule said in chat waits for the owner's "yes" before it is saved
+async function approvalsChat(a, t) { // a department lead: "auto approve …" (read back, saved on yes) · "rules" · "pause|resume|delete … rule" · "pause|resume auto approvals"
+  if (leadOf(a.department).id !== a.id) return approvals.proposes(t) || /\brules?\b/i.test(t) && /^\s*(pause|resume|delete|remove)\b/i.test(t) || /^\s*(pause|stop|resume|start)\s+(?:all\s+)?(?:the\s+)?auto[\s-]*approv/i.test(t)
+    ? { reply: `Auto approve rules are set with the department lead — open ${leadOf(a.department).name}'s chat.` } : null; // so "pause the refunds rule" never pauses a routine by mistake
+  const p = pendingRule.get(a.id);
+  if (p) {
+    pendingRule.delete(a.id);
+    if (/^\s*(yes|y|yep|yes please|confirm|do it|turn it on)\s*[.!]?\s*$/i.test(t) && Date.now() - p.at < 30 * 60000) {
+      let id = p.rule.id; approvals.edit(BRAIN, doc => { let n = 2; while (doc.rules.some(r => r?.id === id)) id = `${p.rule.id}-${n++}`; doc.rules.push(approvals.clean({ ...p.rule, id })); });
+      console.log(`⚡ rule ${id} on (from ${a.name}'s chat): ${approvals.describeRule(p.rule)}`);
+      return { reply: `On. "${p.rule.title}" now sends what fits it without waiting for you. Say "rules" to see them, "pause ${p.rule.title.toLowerCase()} rule" to stop it.` };
+    }
+    if (/^\s*(no|nope|cancel|drop it|stop)\b/i.test(t)) return { reply: 'Dropped. Nothing was turned on.' };
+  }
+  if (/^\s*((auto[\s-]*approv\w*|approval)\s+)?rules\s*\??\s*$/i.test(t)) return { reply: approvals.listText(approvals.load(BRAIN), approvals.loadLedger(DATA)) };
+  const sw = /^\s*(pause|stop|resume|start)\s+(?:all\s+)?(?:the\s+)?auto[\s-]*approv(?:als?|ing|e)\s*[.!]?\s*$/i.exec(t);
+  if (sw) { const off = /pause|stop/i.test(sw[1]); approvals.edit(BRAIN, doc => { doc.paused = off; }); console.log(`⚡ auto approvals ${off ? 'paused' : 'resumed'} (from ${a.name}'s chat)`); return { reply: off ? 'Paused. Every draft waits for you again until you say "resume auto approvals".' : 'Resumed. Drafts that fit a rule go out on their own again.' }; }
+  const cmd = /^\s*(pause|resume|delete|remove)\s+(?:the\s+)?(.+?)\s+(?:auto[\s-]*approve\s+)?rule\s*[.!]?\s*$/i.exec(t);
+  if (cmd) {
+    const d = approvals.load(BRAIN), r = approvals.matchRule(d.rules, cmd[2]); if (!r) return { reply: 'Which one? ' + approvals.listText(d, approvals.loadLedger(DATA)) };
+    const verb = cmd[1].toLowerCase();
+    approvals.edit(BRAIN, doc => { if (/delete|remove/.test(verb)) doc.rules = doc.rules.filter(x => x?.id !== r.id); else { const x = doc.rules.find(y => y?.id === r.id); if (x) x.paused = verb === 'pause'; } });
+    console.log(`⚡ rule ${r.id} ${verb}d (from ${a.name}'s chat)`);
+    return { reply: /delete|remove/.test(verb) ? `Deleted "${r.title}".` : verb === 'pause' ? `Paused "${r.title}". Drafts it would have sent wait for you.` : `"${r.title}" is back on.` };
+  }
+  if (!approvals.proposes(t)) return null;
+  const out = await approvals.parseSentence(ask, t, { dept: a.department, currency: cfg.currency, existing: approvals.load(BRAIN).rules });
+  if (out.error) return { reply: out.error };
+  pendingRule.set(a.id, { rule: out.rule, at: Date.now() });
+  return { reply: approvals.confirmText(out.rule) };
+}
 const agentName = id => AGENTS.find(a => a.id === id)?.name || id;
 // routine-driven runs go one at a time, so a burst of catch-ups after a long sleep does not spawn five Claude processes at once
 let queue = Promise.resolve();
@@ -378,9 +412,9 @@ function fire(r, { due = Date.now(), late = false, by = 'routine' } = {}) { // t
   return task;
 }
 // STORE (spec 0001): the approved actions only, one gated Claude run (actions.approve + gate.mjs); outcomes from the real calls
-async function approveRun(task) {
+async function approveRun(task, strict = false) { // strict (spec 0002): an auto approved run — the gate also checks each call's amount and recipient
   const a = AGENTS.find(x => x.id === task.agent); const { pick, eff } = pickFor(task, a);
-  const r = await actions.approve(task, { agent: a, deptName: DEPTS[a.department].name, business: cfg.name, servers: mcp.usable(), sdk: !!sdk, dir: path.join(GATES, task.id), ask: askX, model: pick.model, effort: eff.effort });
+  const r = await actions.approve(task, { agent: a, deptName: DEPTS[a.department].name, business: cfg.name, servers: mcp.usable(), sdk: !!sdk, dir: path.join(GATES, task.id), ask: askX, model: pick.model, effort: eff.effort, strict });
   const report = r.text || (r.error ? 'The run stopped: ' + r.error + '. The outcomes below come from the calls that were seen.' : '');
   Object.assign(task, { actions: r.actions, gateDenied: r.gateDenied.length ? r.gateDenied : undefined, gateFailed: r.gateFailed || undefined, result: (task.draft || task.result) + '\n\n---\nAFTER YOUR OK\n' + report,
     approved: true, approvedAt: Date.now(), error: !!r.error, tools: [...new Set([...(task.tools || []), ...toolKeys(r.tools)])], used: [...new Set([...(task.used || []), ...mcp.namesOf(r.tools)])], modelUsed: pick.model, modelFrom: pick.from, effortUsed: eff.effort || '', effortFrom: eff.from });
@@ -389,11 +423,11 @@ async function approveRun(task) {
   console.log(`  ↳ ${task.id} actions: ${r.actions.map(x => x.id + ' ' + actions.STATUS_TEXT[x.outcome.status]).join(' · ')}`);
 }
 function finishApproved(task) { delete task.approving; task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); }
-async function runServerTask(id, { feedback, approve } = {}) {
+async function runServerTask(id, { feedback, approve, strict = false } = {}) {
   let list = load(); const task = list.find(t => t.id === id); if (!task) return null;
   task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; if (approve) task.approving = true; save(list); // approving: a restart mid-send is closed out at startup (AC-15)
   try {
-    if (approve) { await approveRun(task); finishApproved(task); await rebuildGraph(); }
+    if (approve) { await approveRun(task, strict); finishApproved(task); await rebuildGraph(); }
     else {
       const out = await run(task, feedback, task.needsOk ? 'draft' : 'routine');
       task.result = out.result;
@@ -404,6 +438,9 @@ async function runServerTask(id, { feedback, approve } = {}) {
         Object.assign(task, { result: d.body, draft: d.body, actions: d.actions, actionsRead: d.actionsRead, ...(d.actionsWhy ? { actionsWhy: d.actionsWhy } : {}) });
         task.state = 'waiting'; task.waitingAt = Date.now(); task.ask = routines.askLine(task);
         console.log(`  ↳ ${task.id} actions ${d.actionsRead === 'ok' ? actions.summary(d.actions) : 'unreadable: ' + d.actionsWhy}`);
+        const au = approvals.afterDraft(task, { brainPath: BRAIN, dataDir: DATA, sdk: !!sdk }); // STORE spec 0002: every action fits a rule with room left → sent by rule (ledger written first)
+        if (au.auto) { Object.assign(task, { state: 'doing', startedAt: Date.now(), approving: true }); delete task.ask; console.log(`  ⚡ ${task.id} approved by rule: ${task.autoApproved.rules.map(r => r.title).join(', ')}`); }
+        else if (au.why) console.log(`  ↳ ${task.id} waits for you: ${au.why}`);
       }
       else { task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); await rebuildGraph(); }
     }
@@ -411,7 +448,8 @@ async function runServerTask(id, { feedback, approve } = {}) {
     delete task.approving; Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });
   }
   list = load(); const i = list.findIndex(t => t.id === task.id); if (i >= 0) list[i] = task; save(list);
-  console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
+  console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : task.state === 'doing' ? '⚡' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : task.state === 'doing' ? 'sending by rule' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
+  if (!approve && task.state === 'doing' && task.autoApproved) enqueue(() => runServerTask(task.id, { approve: true, strict: true })); // STORE spec 0002: the same gated run as APPROVE, strict
   return task;
 }
 function tickRoutines() {
@@ -535,6 +573,20 @@ const server = http.createServer(async (req, res) => {
       if (b.effort !== undefined) patch.effort = normEffort(b.effort) || '';
       editRoutine(r.id, patch); return json(res, 200, { ok: true, routines: loadRoutines() });
     }
+    if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, approvalsOut()); // STORE spec 0002
+    const am = url.pathname.match(/^\/api\/approvals\/([^/]+)(?:\/(pause|resume))?$/);
+    if (am) {
+      if ((am[1] === 'pause' || am[1] === 'resume') && !am[2]) { // the one switch for every rule
+        if (req.method !== 'POST') return json(res, 405, { error: 'POST' });
+        approvals.edit(BRAIN, doc => { doc.paused = am[1] === 'pause'; }); console.log(`⚡ auto approvals ${am[1]}d`); return json(res, 200, { ok: true, ...approvalsOut() });
+      }
+      const r = approvals.load(BRAIN).rules.find(x => x.id === am[1]); if (!r) return json(res, 404, { error: 'no such rule' });
+      if (req.method === 'DELETE' && !am[2]) approvals.edit(BRAIN, doc => { doc.rules = doc.rules.filter(x => x?.id !== r.id); });
+      else if (req.method === 'POST' && am[2]) approvals.edit(BRAIN, doc => { const x = doc.rules.find(y => y?.id === r.id); if (x) x.paused = am[2] === 'pause'; });
+      else return json(res, 405, { error: 'POST …/pause|resume or DELETE' });
+      console.log(`⚡ rule ${r.id} ${req.method === 'DELETE' ? 'deleted' : am[2] + 'd'}`);
+      return json(res, 200, { ok: true, ...approvalsOut() });
+    }
     if (url.pathname === '/api/tasks' && req.method === 'POST') {
       const { dept, text, model, effort, team, at } = await body(req);
       if (!DEPTS[dept] || dept === 'brain') return json(res, 400, { error: 'unknown department' });
@@ -605,6 +657,8 @@ const server = http.createServer(async (req, res) => {
       if (!text || !String(text).trim()) return json(res, 400, { error: 'empty message' });
       const a = AGENTS.find(x => x.id === agent); if (!a) return json(res, 400, { error: 'unknown agent' });
       if (!onboard.active(DATA, a.department)) { // V3.5: "every weekday at 8am, …" · "routines" · "pause …" · "run … now" — unless the lead is mid-interview
+        const ac = await approvalsChat(a, String(text).trim()); // STORE spec 0002: auto approve rules, before routines ("pause … rule" is a rule)
+        if (ac) return json(res, 200, { reply: ac.reply, read: [], tools: [], interview: false, approvals: true });
         const rc = await routinesChat(a, String(text).trim());
         if (rc) return json(res, 200, { reply: rc.reply, read: [], tools: [], interview: false, routine: rc.routine || null, routines: true });
       }

@@ -493,6 +493,125 @@ await step('actions: draft lines per role, the rework list, the note section and
   return 'pieces write no block · the example validates · rework carries the list without outcomes · note section and front matter line · a stopped approve closes out as unknown';
 });
 
+/* ---------- 1g. auto approve rules (STORE, spec 0002) ---------- */
+const RULES = [
+  { id: 'small-refunds', title: 'Small refunds', kinds: ['refund'], max: 30, currency: 'USD', dailyMax: 200 },
+  { id: 'status-replies', title: 'Status replies', kinds: ['reply', 'email'], routines: ['order-status'], tools: ['mcp__claude_ai_Gmail__send_message'], dailyCount: 2 },
+  { id: 'small-discounts', title: 'Small discounts', kinds: ['discount'], maxPercent: 10, dailyCount: 5, to: ['*@example.com'] },
+];
+await step('approvals: a rule needs a daily cap; broken rules are named and skipped, and an edit leaves them in the file', async () => { // AC-1, AC-2
+  const ap = await import('./approvals.mjs'); const os = await import('node:os');
+  const bad = [
+    [{ id: 'r', kinds: ['refund'], max: 30, currency: 'USD' }, /refund or payment rule needs max, currency and dailyMax/],
+    [{ id: 'r', kinds: ['payment'], dailyCount: 3 }, /refund or payment rule needs max/],
+    [{ id: 'r', kinds: ['reply'] }, /needs dailyCount/],
+    [{ id: 'r', kinds: ['refnd'], dailyCount: 1 }, /"refnd" is not a kind/],
+    [{ id: 'r', kinds: [] }, /no kinds/],
+    [{ id: 'r', kinds: ['discount'], dailyCount: 2 }, /discount rule needs maxPercent or max/],
+    [{ id: 'r', kinds: ['reply'], dailyCount: 2, max: 5 }, /with max needs currency and dailyMax/],
+    [{ id: 'r', kinds: ['reply'], dailyCount: 2, depts: ['shop'] }, /"shop" is not a department/],
+    [{ id: 'r', kinds: ['reply'], dailyCount: 2, tools: ['gmail'] }, /mcp__<server>__<tool>/],
+    [{ id: 'r', kinds: ['reply'], dailyCount: 1.5 }, /whole number/],
+    [{ id: 'r', kinds: ['refund'], max: -1, currency: 'USD', dailyMax: 5 }, /max must be a number above 0/],
+  ];
+  for (const [r, re] of bad) { const v = ap.validate(r); if (!v.problems.some(p => re.test(p))) throw new Error(`${JSON.stringify(r)} → ${v.problems.join(' | ') || 'no problem'}`); }
+  for (const r of RULES) { const v = ap.validate(r); if (v.problems.length) throw new Error('a good rule refused: ' + v.problems); }
+  const brain = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-rules-'));
+  try {
+    fs.mkdirSync(path.join(brain, 'Agents Office'), { recursive: true });
+    fs.writeFileSync(ap.file(brain), JSON.stringify({ paused: false, rules: [RULES[0], { id: 'broken', kinds: ['refund'] }, { ...RULES[0] }] }));
+    const d = ap.load(brain); if (d.rules.length !== 1 || !d.problems.some(p => /broken: .*needs max/.test(p)) || !d.problems.some(p => /share this id/.test(p))) throw new Error('load: ' + JSON.stringify(d));
+    ap.edit(brain, doc => { doc.rules.find(r => r.id === 'small-refunds').paused = true; });
+    const raw = JSON.parse(fs.readFileSync(ap.file(brain), 'utf8')); if (!raw.rules.some(r => r.id === 'broken') || raw.rules[0].paused !== true) throw new Error('an edit dropped the broken rule or missed the pause: ' + JSON.stringify(raw));
+  } finally { fs.rmSync(brain, { recursive: true, force: true }); }
+  return `${bad.length} broken rules named · good ones load · pausing one keeps the broken one in the file for the owner to fix`;
+});
+await step('approvals: a draft goes out by rule only when every action fits with room left today; otherwise it waits and says why', async () => { // AC-3, AC-4
+  const ap = await import('./approvals.mjs');
+  const rules = RULES.map(r => ap.validate(r).rule), now = new Date('2026-10-24T15:00:00').getTime(), yesterday = now - 864e5;
+  const act = (o, i = 1) => ({ id: 'a' + i, kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#1', amount: 12.5, percent: null, currency: 'USD', summary: 's', ...o });
+  const task = (acts, o) => ({ id: 't', dept: 'delivery', routine: 'order-status', actionsRead: 'ok', actions: acts, ...o });
+  const L = entries => ({ entries });
+  const why = (t, o = {}) => { const d = ap.decide(t, { rules, ledger: L([]), now, ...o }); return d.ok ? 'OK ' + d.take.map(x => x.action + '→' + x.rule).join(',') : d.why; };
+  const cases = [
+    [task([act()]), {}, /^OK a1→small-refunds$/],
+    [task([act({ amount: 25 }), act({ amount: 25 }, 2)]), { ledger: L([{ rule: 'small-refunds', amount: 170, at: now - 3600e3 }]) }, /^a2: Small refunds is at 195\.00 of 200\.00 USD today$/],
+    [task([act({ amount: 25 })]), { ledger: L([{ rule: 'small-refunds', amount: 190, at: yesterday }]) }, /^OK/], // yesterday does not count
+    [task([act({ kind: 'payment' })]), {}, /^a1: no rule covers payment$/],
+    [task([act({ amount: 45 })]), {}, /^a1: 45\.00 USD is over the 30\.00 USD limit of Small refunds$/],
+    [task([act({ currency: 'EUR' })]), {}, /^a1: Small refunds is in USD, not EUR$/],
+    [task([act()]), { rules: [{ ...rules[0], paused: true }] }, /^a1: no rule covers refund \(a paused rule might\)$/],
+    [task([act()]), { paused: true }, /^auto approvals are paused$/],
+    [task([]), {}, /^nothing goes out/],
+    [task([], { actionsRead: 'unreadable' }), {}, /could not be read/],
+    [task([act()]), { sdk: true }, /API key backend/],
+    [task([act({ kind: 'reply', tool: 'mcp__claude_ai_Gmail__send_message', amount: null, currency: null })]), {}, /^OK a1→status-replies$/],
+    [task([act({ kind: 'reply', tool: 'mcp__claude_ai_Gmail__send_message', amount: null, currency: null })], { routine: 'weekly-news' }), {}, /^a1: no rule covers reply$/],
+    [task([act({ kind: 'reply', tool: 'mcp__claude_ai_Gmail__reply', amount: null, currency: null })]), {}, /does not allow mcp__claude_ai_Gmail__reply/],
+    [task([act({ kind: 'reply', tool: 'mcp__claude_ai_Gmail__send_message', amount: null, currency: null }), act({ kind: 'email', tool: 'mcp__claude_ai_Gmail__send_message', amount: null, currency: null }, 2)]), { ledger: L([{ rule: 'status-replies', at: now - 60e3 }]) }, /^a2: Status replies is at 2 of 2 today$/],
+    [task([act({ kind: 'discount', tool: 'mcp__shopify__discount_create', to: 'Jo@Example.com', amount: null, currency: null, percent: 10 })]), {}, /^OK a1→small-discounts$/],
+    [task([act({ kind: 'discount', tool: 'mcp__shopify__discount_create', to: 'jo@example.com', amount: null, currency: null, percent: 15 })]), {}, /15% is over the 10% limit of Small discounts/],
+    [task([act({ kind: 'discount', tool: 'mcp__shopify__discount_create', to: 'jo@other.com', amount: null, currency: null, percent: 5 })]), {}, /does not cover jo@other\.com/],
+    [task([act({ kind: 'discount', tool: 'mcp__shopify__discount_create', to: 'jo@example.com', amount: 5, currency: 'USD', percent: null })]), {}, /Small discounts has no money limit/],
+    [task([act(), act({ kind: 'payment' }, 2)]), {}, /^a2: no rule covers payment$/], // all or nothing
+    [task([act()]), { rules: [] }, /^$/], // no rules: say nothing
+  ];
+  for (const [t, o, re] of cases) { const w = why(t, o); if (!re.test(w)) throw new Error(`expected ${re}, got "${w}" for ${JSON.stringify(t.actions.map(a => [a.kind, a.amount, a.percent, a.currency]))}`); }
+  return `${cases.length} drafts: caps per day and per draft · limits · currency · scope · tools · wildcards · paused · all or nothing`;
+});
+await step('approvals: an approved draft writes the ledger first, names its rule on every action, and the next one meets the cap', async () => { // AC-5, AC-7, AC-8
+  const ap = await import('./approvals.mjs'); const os = await import('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-auto-')), brain = path.join(tmp, 'brain'), data = path.join(tmp, 'data');
+  try {
+    fs.mkdirSync(path.join(brain, 'Agents Office'), { recursive: true }); fs.writeFileSync(ap.file(brain), JSON.stringify({ rules: [{ ...RULES[0], dailyMax: 30 }] }));
+    const t = { id: 't1', dept: 'fin', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#1', amount: 20, currency: 'USD', summary: 's' }], autoWhy: 'old reason' };
+    const r = ap.afterDraft(t, { brainPath: brain, dataDir: data });
+    if (!r.auto || t.autoWhy || t.autoApproved?.rules?.[0]?.title !== 'Small refunds' || t.actions[0].rule !== 'small-refunds') throw new Error('first draft: ' + JSON.stringify(t));
+    const led = ap.loadLedger(data); if (led.entries.length !== 1 || led.entries[0].amount !== 20 || led.entries[0].task !== 't1') throw new Error('ledger: ' + JSON.stringify(led));
+    if (ap.noteLines(t) !== 'approved by: rule small-refunds (Small refunds)') throw new Error('note line: ' + ap.noteLines(t));
+    const t2 = { ...t, id: 't2', actions: [{ ...t.actions[0], rule: undefined }] }; delete t2.autoApproved;
+    const r2 = ap.afterDraft(t2, { brainPath: brain, dataDir: data });
+    if (r2.auto || t2.autoApproved || t2.autoWhy !== 'a1: Small refunds is at 20.00 of 30.00 USD today') throw new Error('second draft: ' + JSON.stringify(t2));
+    const doc = ap.load(brain), list = ap.withUse(doc, ap.loadLedger(data));
+    if (list[0].use !== '20.00 of 30.00 USD today' || !/up to 30\.00 USD each · at most 30\.00 USD a day/.test(list[0].desc)) throw new Error('panel text: ' + JSON.stringify(list[0]));
+    ap.saveLedger(data, { entries: [{ rule: 'x', amount: 1, at: Date.now() - 9 * 864e5 }, ...ap.loadLedger(data).entries] }); if (ap.loadLedger(data).entries.length !== 1) throw new Error('entries older than 8 days are kept');
+    return 'ledger written · rule on the action · note line · the next draft waits at 20.00 of 30.00 USD · old ledger lines drop';
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+await step('approvals: the strict gate of an auto run blocks a call without the listed amount or recipient; a manual run only flags it', async () => { // AC-6
+  const A = await import('./actions.mjs'); const os = await import('node:os');
+  const T = 'mcp__shopify__refund_create', base = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-strict-'));
+  try {
+    const list = [{ id: 'a1', tool: T, to: '#1001', amount: 12.5 }, { id: 'a2', tool: T, to: '#1002', amount: 40 }];
+    const s = path.join(base, 's'); A.prepareGate(s, list, { strict: true });
+    const call = (dir, id, input) => gateCall(dir, { tool_name: T, tool_input: input, tool_use_id: id });
+    const r = [await call(s, 'c1', { order: '#1002', amount: 40 }), await call(s, 'c2', { order: '#1001', amount: 13 }), await call(s, 'c3', { order: '#1001', amount_minor: 1250 })];
+    if (r.map(x => x.code).join() !== '0,2,0' || !/blocked: a1: amount 12\.50 not found in the call/.test(r[1].err)) throw new Error('strict: ' + r.map(x => x.code + ' ' + x.err.trim()).join(' | '));
+    const d = A.readGate(s).decisions; if (d.find(x => x.id === 'c1').action !== 'a2' || d.find(x => x.id === 'c3').action !== 'a1') throw new Error('the gate did not name the action it gave the call: ' + JSON.stringify(d));
+    const o = A.outcomes(list, [{ id: 'c1', name: T, input: { order: '#1002', amount: 40 }, ok: true }, { id: 'c2', name: T, input: {}, ok: false, error: 'blocked' }], d.filter(x => x.id !== 'c3')).actions;
+    if (o[1].outcome.status !== 'done' || o[0].outcome.status !== 'not_done' || !/^blocked: a1: amount 12\.50/.test(o[0].outcome.error)) throw new Error('outcomes: ' + JSON.stringify(o.map(a => a.outcome)));
+    const m = path.join(base, 'm'); A.prepareGate(m, list); const mr = await call(m, 'c9', { order: '#9', amount: 1 });
+    if (mr.code !== 0) throw new Error('a manual approve must not block on arguments: ' + mr.err);
+    return 'a2 by its arguments · wrong amount blocked with the reason · minor units pass · the reason lands on the action · manual run passes the same call';
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+await step('approvals: a lead turns a sentence into a rule only after a yes; list, pause and match by words', async () => { // AC-9
+  const ap = await import('./approvals.mjs');
+  for (const y of ['auto approve refunds under 30 USD, at most 200 a day', 'Please auto-approve small discounts']) if (!ap.proposes(y)) throw new Error('not taken as a rule: ' + y);
+  for (const n of ['auto approve rules', 'approve the refund', 'what are the rules?']) if (ap.proposes(n)) throw new Error('wrongly taken as a new rule: ' + n);
+  const stub = reply => async () => JSON.stringify(reply);
+  const good = await ap.parseSentence(stub({ title: 'Small refunds', kinds: ['refund'], max: 30, currency: 'usd', dailyMax: 200 }), 'auto approve refunds under 30, at most 200 a day', { dept: 'delivery', existing: [{ id: 'small-refunds' }] });
+  if (good.error || good.rule.id !== 'small-refunds-2' || good.rule.currency !== 'USD' || good.rule.depts.join() !== 'delivery') throw new Error('parse: ' + JSON.stringify(good));
+  if (!/Say "yes" to turn it on/.test(ap.confirmText(good.rule)) || !/Small refunds — refund · up to 30\.00 USD each · at most 200\.00 USD a day · delivery only/.test(ap.confirmText(good.rule))) throw new Error('read back: ' + ap.confirmText(good.rule));
+  const nocap = await ap.parseSentence(stub({ title: 'Refunds', kinds: ['refund'], max: 30, currency: 'USD' }), 'auto approve refunds under 30', { dept: 'delivery' });
+  if (!/not complete yet: .*daily money cap/.test(nocap.error || '')) throw new Error('a rule with no cap must be sent back: ' + JSON.stringify(nocap));
+  const junk = await ap.parseSentence(async () => 'sorry, no', 'auto approve everything', {}); if (!/could not turn that into a rule/.test(junk.error || '')) throw new Error('junk: ' + JSON.stringify(junk));
+  const rules = RULES.map(r => ap.validate(r).rule);
+  if (ap.matchRule(rules, 'the discounts one')?.id !== 'small-discounts' || ap.matchRule(rules, 'the xyz')) throw new Error('match by words');
+  const txt = ap.listText({ paused: true, rules }, { entries: [] }); if (!/ALL PAUSED/.test(txt) || !/Small refunds — refund · up to 30\.00 USD each · at most 200\.00 USD a day · 0\.00 of 200\.00 USD today/.test(txt)) throw new Error('list: ' + txt);
+  return 'sentence → rule scoped to the department · read back before saving · no cap sent back · words pick the rule';
+});
+
 /* ---------- 2. offline smoke (Playwright) ---------- */
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { try { ({ chromium } = await import('playwright-core')); } catch {} }
@@ -688,6 +807,29 @@ else {
       await page.click('.tp-chip[data-f="all"]');
       return `row "${rows.find(x => /42\.00/.test(x)).split(' · ').slice(-2).join(' · ')}" · card lists both payments · unreadable card locks APPROVE`;
     });
+    await step('smoke: the rules head the Waiting list with today\'s use and pause; a waiting card says why; a done row names its rule (demo)', async () => { // STORE spec 0002: AC-8
+      await page.evaluate(() => window.CC.tasks.setApprovals({ paused: false, rules: [{ id: 'small-refunds', title: 'Small refunds', desc: 'refund · up to 30.00 USD each · at most 200.00 USD a day', use: '40.00 of 200.00 USD today', paused: false }] }));
+      await page.click('.tp-chip[data-f="waiting"]');
+      await until(() => document.querySelectorAll('.tp-row.rule').length === 2);
+      const rows = await page.evaluate(() => [...document.querySelectorAll('.tp-row.rule')].map(e => e.textContent.replace(/\s+/g, ' '))); // textContent: the panel sets the metas in capitals by CSS
+      if (!/AUTO APPROVE · 1 rule/.test(rows[0]) || !/Small refunds/.test(rows[1]) || !/40\.00 of 200\.00 USD today/.test(rows[1])) throw new Error('rule rows: ' + JSON.stringify(rows));
+      await page.click('.tp-row.rule[data-rule="small-refunds"] [data-ract="pause"]'); await until(() => document.querySelector('.tp-row.rule[data-rule="small-refunds"]')?.classList.contains('paused'));
+      if (!await page.evaluate(() => window.CC.tasks.rules().rules[0].paused === true && document.querySelector('.tp-row.rule[data-rule="small-refunds"]').classList.contains('paused'))) throw new Error('PAUSE did not take');
+      await page.click('.tp-row.rule.head [data-ract="pause"]'); await until(() => /ALL PAUSED/.test(document.querySelector('.tp-row.rule.head')?.textContent || ''));
+      if (!await page.evaluate(() => window.CC.tasks.rules().paused === true)) throw new Error('PAUSE ALL did not take');
+      await page.evaluate(n => { const base = { dept: 'fin', text: 'x', addedAt: n, by: 'routine', needsOk: true, actionsRead: 'ok' };
+        window.CC.tasks.reconcile({ ...base, id: 'chk-why', agent: 'alead', title: 'Refund the late order', state: 'waiting', waitingAt: n, draft: 'A refund.', result: 'A refund.', autoWhy: 'a1: 45.00 USD is over the 30.00 USD limit of Small refunds', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#7', amount: 45, currency: 'USD', summary: 'Refund #7' }] });
+        window.CC.tasks.reconcile({ ...base, id: 'chk-rule', agent: 'invo', title: 'Refund the shipping', state: 'done', doneAt: n, approved: true, result: 'Sent.', autoApproved: { rules: [{ id: 'small-refunds', title: 'Small refunds' }], at: n }, actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#8', amount: 12.5, currency: 'USD', summary: 'Refund #8', rule: 'small-refunds', outcome: { status: 'done' } }] }); }, Date.now());
+      await page.click('.tp-chip[data-f="done"]');
+      await until(() => [...document.querySelectorAll('.tp-row .tp-m')].some(e => /approved by rule Small refunds/.test(e.textContent)));
+      if (!await page.evaluate(() => [...document.querySelectorAll('.tp-row .tp-m')].some(e => /⚡ approved by rule Small refunds/.test(e.textContent)))) throw new Error('no "approved by rule" on the done row');
+      await page.evaluate(() => window.CC.openAgent('alead'));
+      await until(() => /Not sent by rule/.test([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || ''));
+      const card = await page.evaluate(() => ([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.innerText || '').replace(/\s+/g, ' ')); if (!/Not sent by rule: a1: 45\.00 USD is over the 30\.00 USD limit of Small refunds\./.test(card)) throw new Error('waiting card: ' + card);
+      await page.keyboard.press('Escape'); await until(() => !document.getElementById('rail').classList.contains('open'));
+      await page.click('.tp-chip[data-f="all"]');
+      return 'rules under Waiting with use · PAUSE and PAUSE ALL · the card says why it waits · the done row says "approved by rule Small refunds"';
+    });
     await step('smoke: no errors after the run', async () => { if (errors.length) throw new Error(errors[0]); });
   } catch (e) { bad('smoke: browser', e.message); }
   finally { if (browser) await browser.close(); }
@@ -804,6 +946,29 @@ else {
         return `old → "${o.j.error.slice(0, 50)}…" · unreadable → 400 · empty → done, no run · a second approve refused`;
       } finally { for (const id of Object.values(ids)) await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
     });
+    await step('server: /api/approvals lists the rules with today\'s use; the switch, pause, delete and the lead\'s chat edit the file', async () => { // STORE spec 0002: AC-8, AC-9, AC-10
+      const RF = path.join(cfg.brainPath, 'Agents Office', 'approvals.json');
+      const g = await (await fetch(base + '/api/approvals')).json(); if (typeof g.paused !== 'boolean' || !Array.isArray(g.rules) || !Array.isArray(g.problems)) throw new Error('shape: ' + JSON.stringify(g).slice(0, 160));
+      if (fs.existsSync(RF)) return `${g.rules.length} rules of yours · left untouched (the edit checks run only when there is no approvals.json)`;
+      fs.mkdirSync(path.dirname(RF), { recursive: true }); fs.writeFileSync(RF, JSON.stringify({ paused: false, rules: [RULES[0], { id: 'broken', kinds: ['refund'] }] }));
+      try {
+        const post = async (p, m = 'POST') => (await fetch(base + p, { method: m })).json();
+        const a = await (await fetch(base + '/api/approvals')).json();
+        if (a.rules.length !== 1 || a.rules[0].use !== '0.00 of 200.00 USD today' || !a.problems.some(p => /broken/.test(p))) throw new Error('get: ' + JSON.stringify(a).slice(0, 200));
+        if ((await post('/api/approvals/pause')).paused !== true || (await post('/api/approvals/resume')).paused !== false) throw new Error('the switch');
+        if ((await post('/api/approvals/small-refunds/pause')).rules[0].paused !== true) throw new Error('rule pause');
+        if ((await fetch(base + '/api/approvals/nope/pause', { method: 'POST' })).status !== 404) throw new Error('an unknown rule must be a 404');
+        const lead = up.agents.find(x => x.department === 'fin' && x.lead), desk = up.agents.find(x => x.department === 'fin' && !x.lead);
+        const chat = async (agent, text) => (await fetch(base + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent, text }) })).json();
+        const list = await chat(lead.id, 'rules'); if (!list.approvals || !/Small refunds — refund/.test(list.reply) || !/PAUSED/.test(list.reply)) throw new Error('lead list: ' + JSON.stringify(list).slice(0, 200));
+        const res = await chat(lead.id, 'resume the small refunds rule'); if (!/back on/.test(res.reply) || JSON.parse(fs.readFileSync(RF, 'utf8')).rules[0].paused) throw new Error('lead resume: ' + res.reply);
+        const other = await chat(desk.id, 'pause the small refunds rule'); if (!/set with the department lead/.test(other.reply)) throw new Error('a desk that is not the lead: ' + other.reply);
+        const sw = await chat(lead.id, 'pause auto approvals'); if (!/^Paused/.test(sw.reply) || JSON.parse(fs.readFileSync(RF, 'utf8')).paused !== true) throw new Error('switch in chat: ' + sw.reply);
+        const del = await post('/api/approvals/small-refunds', 'DELETE'); const raw = JSON.parse(fs.readFileSync(RF, 'utf8'));
+        if (del.rules.length || !raw.rules.some(r => r.id === 'broken')) throw new Error('delete must remove the one rule and keep the broken one for the owner: ' + JSON.stringify(raw));
+        return `use "${a.rules[0].use}" · switch · pause · 404 · ${lead.name}: list, resume, pause all · ${desk.name} points to the lead · delete keeps the broken rule`;
+      } finally { fs.rmSync(RF, { force: true }); }
+    });
     await step('server: rejects an empty task', async () => { const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"dept":"sales","text":""}' }); if (r.status !== 400) throw new Error('status ' + r.status); });
     if (LIVE) {
       await step('live: Claude routes a task', async () => {
@@ -911,6 +1076,25 @@ else {
           if (!/## Actions\n- a1 · other · to primary · done/.test(fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'))) throw new Error('the note has no Actions section');
           return `a1 done${o.flag ? ' (flag: ' + o.flag + ')' : ''} · ${t.gateDenied?.length || 0} blocked · ${t.note}.md`;
         } finally { await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
+      });
+      await step('live: a draft that fits a rule is sent by rule, and the strict gate blocks a call that does not show its recipient', async () => { // STORE spec 0002: AC-4 to AC-6
+        const RF = path.join(cfg.brainPath, 'Agents Office', 'approvals.json');
+        if (fs.existsSync(RF)) return 'skipped: you have an approvals.json, and this step plants its own rule';
+        if (!await gateServer()) return `skipped: ${GATE_TOOL} is not on a connected server here`;
+        const rr = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'ops', needsOk: true, when: { kind: 'weekly', days: [0], at: '03:00' },
+          text: `Office check. Do not call any tool while drafting. Your actions block must hold exactly one action: {"kind":"other","tool":"${GATE_TOOL}","to":"office-check-recipient","summary":"List the calendars (office check)"}.` }) });
+        const rj = await rr.json(); if (!rr.ok) throw new Error('routine: ' + rj.error);
+        fs.mkdirSync(path.dirname(RF), { recursive: true }); fs.writeFileSync(RF, JSON.stringify({ rules: [{ id: 'office-check', title: 'Office check', kinds: ['other'], tools: [GATE_TOOL], routines: [rj.routine.id], dailyCount: 1 }] }));
+        let id = null;
+        try {
+          id = (await (await fetch(`${base}/api/routines/${rj.routine.id}/run`, { method: 'POST' })).json()).task.id;
+          let t = null; for (let i = 0; i < 120 && !(t && (t.state === 'done' || t.state === 'waiting')); i++) { await new Promise(r => setTimeout(r, 3000)); t = readTasks().find(x => x.id === id); }
+          if (!t || (t.state !== 'done' && t.state !== 'waiting')) throw new Error('the routine did not finish in time'); if (t.note) chkNotes.push(t.note);
+          if (t.state === 'waiting') throw new Error(`it waited instead of going by rule: ${t.autoWhy || t.actionsWhy || 'no reason'} · actions ${JSON.stringify(t.actions)}`);
+          const o = t.actions[0]?.outcome; if (t.autoApproved?.rules?.[0]?.id !== 'office-check' || o?.status !== 'not_done' || !/blocked: a1: recipient not found in the call/.test(o.error || '')) throw new Error('outcome: ' + JSON.stringify({ auto: t.autoApproved, actions: t.actions, gateDenied: t.gateDenied }));
+          if (!/^approved by: rule office-check \(Office check\)$/m.test(fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'))) throw new Error('the note does not name the rule');
+          return `sent by rule Office check · a1 blocked by the strict gate: ${o.error} · ${t.note}.md`;
+        } finally { fs.rmSync(RF, { force: true }); await fetch(`${base}/api/routines/${rj.routine.id}`, { method: 'DELETE' }); if (id) await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
       });
       if (chromium) await step('live: the whole flow in a browser', async () => {
         let browser; try { browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); } catch { browser = await chromium.launch({ channel: 'chrome' }); }

@@ -27,6 +27,22 @@ export function summary(list) {
 export function cardLines(list) {
   return (list || []).map(a => ({ head: `${kindText(a.kind)} · to ${a.to}`, money: money(a), summary: a.summary, tool: a.tool }));
 }
+// is the action's amount and recipient in a tool call's input? The amount matches within 0.005 or in minor units (12.50 = 1250);
+// the recipient as a case insensitive substring of any value. A manual approve only flags a miss; the strict gate of an auto approved run (spec 0002) blocks it
+export const num = v => typeof v === 'number' ? v : typeof v === 'string' && /^-?\d*\.?\d+$/.test(v.trim()) ? Number(v.trim()) : NaN;
+function values(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) values(x, out);
+  else if (v && typeof v === 'object') for (const x of Object.values(v)) values(x, out);
+  else if (typeof v === 'string' || typeof v === 'number') out.push(v);
+  return out;
+}
+export function found(a, input) {
+  const vals = values(input);
+  const amountOk = a.amount == null || vals.some(v => { const n = num(v); return Number.isFinite(n) && (Math.abs(n - a.amount) < 0.005 || n === Math.round(a.amount * 100)); });
+  const to = String(a.to).toLowerCase(), toOk = vals.some(v => String(v).toLowerCase().includes(to));
+  const flag = [!amountOk && `amount ${Number(a.amount).toFixed(2)} not found in the call`, !toOk && 'recipient not found in the call'].filter(Boolean).join('; ');
+  return { ok: amountOk && toOk, flag };
+}
 // one line per action once it has run: "a1 · refund · to #1001 · 12.50 USD · done"
 export function outcomeLine(a) {
   const o = a.outcome || {};

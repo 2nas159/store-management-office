@@ -89,7 +89,7 @@ The owner is not there when this fires, so every safety has to live in code and 
 ] }
 ```
 
-**Task fields** (in `data/tasks.json`): `autoApproved: { rules: [id], at }` when sent by rule. `autoWhy: string` when rules exist and the draft waits. `actions[i].rule: id` for the rule that took the action.
+**Task fields** (in `data/tasks.json`): `autoApproved: { rules: [{ id, title }], at }` when sent by rule (the title is kept so the note and the panel need no lookup). `autoWhy: string` when rules exist and the draft waits. `actions[i].rule: id` for the rule that took the action.
 
 **Ledger** (`data/approvals.json`, run state): `{ "entries": [{ "rule", "task", "action", "amount", "currency", "at" }] }`. Entries older than 8 days are dropped on write.
 

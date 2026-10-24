@@ -16,8 +16,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { KINDS, STATUS_TEXT, summary, cardLines, outcomeLine, readOf, OLD_WHY, money } from './src/actions.js';
-export { KINDS, STATUS_TEXT, summary, cardLines, outcomeLine, readOf, OLD_WHY, money };
+import { KINDS, STATUS_TEXT, summary, cardLines, outcomeLine, readOf, OLD_WHY, money, found, num } from './src/actions.js';
+export { KINDS, STATUS_TEXT, summary, cardLines, outcomeLine, readOf, OLD_WHY, money, found };
 
 const GATE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'gate.mjs');
 export const BROWSER = 'claude-in-chrome';
@@ -53,7 +53,6 @@ export function parse(text) {
   if (!Array.isArray(list)) return { why: 'the actions block is not a JSON list', body };
   return { list, body };
 }
-const num = v => typeof v === 'number' ? v : typeof v === 'string' && /^-?\d*\.?\d+$/.test(v.trim()) ? Number(v.trim()) : NaN;
 const given = v => v !== undefined && v !== null && v !== '';
 const TOOL = /^mcp__(.+?)__(.+)$/;
 // servers: [{ id, tools }] as mcp.usable() gives them · sdk: the API key backend, which has no connectors (the connected check is skipped)
@@ -108,10 +107,12 @@ export function approveSystem(agent, list, draft, { business = 'the business', d
 }
 export const approveUser = list => `Approved actions, in this order:\n${JSON.stringify(list.map(({ outcome, ...a }) => a), null, 1)}`;
 const fwd = p => p.split(path.sep).join('/'); // the hook command runs in a shell; forward slashes read the same in Git Bash and cmd
-export function prepareGate(dir, list) {
+// STORE spec 0002: one slot per action (named by its id). strict (an auto approved run): a call takes a slot only when the
+// action's amount and recipient are found in its input; otherwise it is blocked
+export function prepareGate(dir, list, { strict = false } = {}) {
   fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
-  const budget = {}; for (const a of list) budget[a.tool] = (budget[a.tool] || 0) + 1;
-  fs.writeFileSync(path.join(dir, 'budget.json'), JSON.stringify(budget));
+  const actions = list.map((a, i) => ({ id: a.id || 'a' + (i + 1), tool: a.tool, to: a.to ?? null, amount: a.amount ?? null, strict: !!strict }));
+  fs.writeFileSync(path.join(dir, 'budget.json'), JSON.stringify({ actions }));
   const command = `"${fwd(process.execPath)}" "${fwd(GATE)}" "${fwd(dir)}"`;
   const file = path.join(dir, 'settings.json');
   fs.writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: 30 }] }] } }));
@@ -121,21 +122,8 @@ export function readGate(dir) {
   let txt = ''; try { txt = fs.readFileSync(path.join(dir, 'decisions.jsonl'), 'utf8'); } catch {}
   return { decisions: txt.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean) };
 }
-// is the action's amount and recipient in the call's input? Missing means a flag, never a block
-function values(v, out = []) {
-  if (Array.isArray(v)) for (const x of v) values(x, out);
-  else if (v && typeof v === 'object') for (const x of Object.values(v)) values(x, out);
-  else if (typeof v === 'string' || typeof v === 'number') out.push(v);
-  return out;
-}
-export function found(a, input) {
-  const vals = values(input);
-  const amountOk = a.amount == null || vals.some(v => { const n = num(v); return Number.isFinite(n) && (Math.abs(n - a.amount) < 0.005 || n === Math.round(a.amount * 100)); });
-  const to = String(a.to).toLowerCase(), toOk = vals.some(v => String(v).toLowerCase().includes(to));
-  const flag = [!amountOk && `amount ${Number(a.amount).toFixed(2)} not found in the call`, !toOk && 'recipient not found in the call'].filter(Boolean).join('; ');
-  return { ok: amountOk && toOk, flag };
-}
 // calls: [{ id, name, input, ok, error }] from askX (ok null = no result came back) · decisions: the gate's lines
+// (STORE spec 0002: a line may name the action the gate gave the call, and a blocked line its reason)
 export function outcomes(list, calls = [], decisions = [], at = Date.now()) {
   const dec = new Map(decisions.filter(d => d.id).map(d => [d.id, d]));
   const acts = list.map(a => ({ ...a, ...(a.outcome ? { outcome: { ...a.outcome } } : {}) }));
@@ -146,14 +134,15 @@ export function outcomes(list, calls = [], decisions = [], at = Date.now()) {
     if (!d) gateFailed = true; // the hook never ran for this call: it went through ungated, so it still counts
     else if (!d.allow) continue;
     const open = acts.filter(a => !a.outcome && a.tool === c.name); if (!open.length) continue;
-    const a = open.find(x => found(x, c.input).ok) || open[0], f = found(a, c.input);
+    const a = open.find(x => x.id === d?.action) || open.find(x => found(x, c.input).ok) || open[0], f = found(a, c.input);
     a.outcome = { status: c.ok === true ? 'done' : c.ok === false ? 'failed' : 'unknown', at, ...(c.ok === false && c.error ? { error: String(c.error).slice(0, 500) } : {}), ...(f.flag ? { flag: f.flag } : {}) };
   }
-  for (const a of acts) if (!a.outcome) a.outcome = { status: 'not_done', at };
-  return { actions: acts, gateDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, at: d.at })), gateFailed };
+  const why = decisions.filter(d => d.allow === false && d.why);
+  for (const a of acts) if (!a.outcome) { const w = why.find(d => d.tool === a.tool); if (w) why.splice(why.indexOf(w), 1); a.outcome = { status: 'not_done', at, ...(w ? { error: w.why } : {}) }; }
+  return { actions: acts, gateDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, at: d.at, ...(d.why ? { why: d.why } : {}) })), gateFailed };
 }
-// opts: { agent, deptName, business, servers, sdk, dir, ask (askX), model, effort }
-export async function approve(task, { agent, deptName, business, servers = [], sdk = false, dir, ask, model, effort }) {
+// opts: { agent, deptName, business, servers, sdk, dir, ask (askX), model, effort, strict (spec 0002: an auto approved run) }
+export async function approve(task, { agent, deptName, business, servers = [], sdk = false, dir, ask, model, effort, strict = false }) {
   const at = Date.now();
   const list = (task.actions || []).map(({ outcome, ...a }) => a);
   for (const a of list) {
@@ -162,7 +151,7 @@ export async function approve(task, { agent, deptName, business, servers = [], s
   }
   const runnable = list.filter(a => !a.outcome);
   if (!runnable.length) return { actions: list, gateDenied: [], gateFailed: false, ran: false, text: 'Nothing was sent: ' + [...new Set(list.map(a => a.outcome.error))].join('; ') + '.', error: null, tools: [] };
-  const settings = prepareGate(dir, runnable);
+  const settings = prepareGate(dir, runnable, { strict });
   let out = null, err = null;
   try { out = await ask(approveSystem(agent, runnable, task.draft, { business, deptName }), approveUser(runnable), { model, effort, only: [...new Set(runnable.map(a => a.tool))], settings }); }
   catch (e) { err = e; }

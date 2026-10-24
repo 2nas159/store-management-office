@@ -107,6 +107,27 @@ When the owner says "every Monday …", "each morning …", "on a schedule", "au
 
 The server re-reads the file every 20 seconds, so a routine lands without a restart; its next run is computed from the moment it is read. Run state (next run, last run) lives in `data/routines.json`, never in the brain file. After writing: run `npm run check` (it validates every routine and names every problem: unknown agent, wrong department, incomplete schedule, duplicate id), then tell the owner the title, the schedule in words, which agent has it, whether it waits for their OK, and that it shows under the SCHEDULED chip with a RUN NOW button to try it straight away.
 
+## Auto approve rules: small, safe actions go out without waiting (store fork, spec 0002)
+
+When the owner says "auto approve refunds under $30", "let replies from the order status routine go out on their own", "stop waiting for me on …", that is a **rule**. A draft that waits for the OK lists its outbound actions (kind, to, amount, tool); when **every** action fits a rule with room left under the rule's daily cap, the office sends it by itself through the same gated run as APPROVE. Anything else waits as before, and the card says why.
+
+**Where:** `<brain>/Agents Office/approvals.json`. Create it with `{"paused": false, "rules": []}` if it does not exist. Never write rules anywhere else.
+
+```json
+{ "paused": false, "rules": [
+  { "id": "small-refunds", "title": "Small refunds", "kinds": ["refund"], "max": 30, "currency": "USD", "dailyMax": 200, "depts": ["delivery"] },
+  { "id": "order-status-replies", "title": "Order status replies", "kinds": ["reply", "email"], "routines": ["order-status"], "tools": ["mcp__claude_ai_Gmail__send_message"], "dailyCount": 20 }
+] }
+```
+
+- `kinds` from: `email`, `reply`, `post`, `refund`, `discount`, `payment`, `order_update`, `product_update`, `inventory`, `message`, `other`.
+- **Every rule has a daily cap.** `refund` and `payment` need `max` (per action), `currency` and `dailyMax` (per day). Any other kind needs `dailyCount`. A `discount` also needs `maxPercent` or `max`. A rule without its cap is skipped.
+- Optional narrowing: `depts`, `routines` (routine ids from `routines.json`), `tools` (exact `mcp__` names), `to` (recipient patterns, `*` as a wildcard). Use them: "order status replies" means the routine and the tool, because a rule cannot read what a message says.
+- `paused: true` on a rule, or on the file, stops it.
+- Never write a rule the owner did not ask for, and never widen one (a higher cap, more kinds) without the owner saying so. Read the number back to the owner in the reply.
+
+After writing: run `npm run check` (it validates the file and names every bad rule), then tell the owner the rule in words, its caps, and that it shows under the **Waiting** chip with PAUSE. A rule takes effect on the next draft; no restart. The owner can also say it to a department lead in chat ("auto approve …", "rules", "pause … rule", "pause auto approvals").
+
 ## A task for a date (the calendar)
 
 When the owner says "on Friday, …", "next Tuesday at 10, …", "on the 5th, …" for a one-off (not "every"), that is a **scheduled task**, not a routine. The office does these itself: the owner clicks the day in the calendar (P), or the page posts `{ "dept", "text", "at": <ms or ISO> }` to `/api/tasks`. There is no file to write for them (they live in `data/tasks.json`, state `scheduled`, fired by the server's clock); tell the owner to press P and click the day, and say what to type.

@@ -76,13 +76,13 @@ spec [0001](../specs/0001-outbound-action-list-drafts.md) · code in `actions.mj
 ### 4. Auto approve rules · GA
 Rules the owner writes (for example: refunds under $30, discounts up to 10%, replies to order status questions) approve matching actions straight away; anything else, or anything the rule cannot read, waits as it does today. Money moves on these, so it gets the full review.
 **Done when:** a matching action goes out without waiting and its note says which rule approved it; a non matching or unreadable action waits; a rule can be paused; every auto approval shows in the panel and in the brain note.
-spec [0002](../specs/0002-auto-approve-rules.md)
+spec [0002](../specs/0002-auto-approve-rules.md) · code in `approvals.mjs`, `gate.mjs`, `actions.mjs`, `src/actions.js`, `serve.mjs`, `src/tasks.js`, `check.mjs`
 - [x] Design it (spec): `/architect auto approve rules`
-- [ ] Build it: `/develop auto approve rules`
-  - [ ] Thread: rules file, match and daily caps, auto approve through the gated run, ledger, note line (AC-1 to AC-5, AC-7)
-  - [ ] Strict gate: per action slots, arguments must match on auto runs (AC-6)
-  - [ ] Panel: rules under Waiting with use and pause, why a draft waits, the endpoints (AC-8, AC-10)
-  - [ ] Chat and docs: a lead turns a sentence into a rule on "yes", list, pause, delete; CLAUDE.md (AC-9, AC-11)
+- [x] Build it: `/develop auto approve rules`
+  - [x] Thread: rules file, match and daily caps, auto approve through the gated run, ledger, note line (AC-1 to AC-5, AC-7)
+  - [x] Strict gate: per action slots, arguments must match on auto runs (AC-6)
+  - [x] Panel: rules under Waiting with use and pause, why a draft waits, the endpoints (AC-8, AC-10)
+  - [x] Chat and docs: a lead turns a sentence into a rule on "yes", list, pause, delete; CLAUDE.md (AC-9, AC-11)
 - [ ] Verify it: `/check verify auto approve rules`
 - [ ] Test it: `/test auto approve rules`
 - [ ] Review it: `/check review auto approve rules`
