@@ -25,6 +25,8 @@
 // server creates the task, runs it here, and a result that needs the owner's OK waits in
 // WAITING ON APPROVAL until /approve (the agent then does the outbound step) or /reject (with a
 // note, which the agent learns from). STORE (24 Oct 2026): every department (ROUTINE_DEPTS in src/data.js).
+// STORE (24 Oct 2026, spec 0001): the draft ends with a list of its outbound actions, and /approve runs exactly those tools,
+// once per action, behind a PreToolUse call gate; each action's outcome comes from the real calls (actions.mjs, gate.mjs).
 // V3.2 (16 Sep): AGENT TEAMS + CLAUDE IN CHROME. A team task (TEAM in the bar, "as a team" in the sentence,
 // `team: true` on a routine) goes to the department lead, who plans the pieces; the office runs one
 // Claude process per teammate at the same time (teams.mjs, pool of `teams.max`), keeps the shared
@@ -50,6 +52,7 @@ import * as onboard from './onboard.mjs';
 import * as routines from './routines.mjs';
 import * as usage from './usage.mjs';
 import * as teams from './teams.mjs';
+import * as actions from './actions.mjs'; // STORE (24 Oct 2026): outbound action lists on drafts + the approve call gate (spec 0001)
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
 
@@ -57,6 +60,7 @@ const cfg = loadConfig();
 const HTML = path.join(ROOT, 'dist', 'command-centre-v2.html'); // built by build.mjs; shipped so npm start works without a build
 const DATA = path.join(ROOT, 'data');
 const FILE = path.join(DATA, 'tasks.json');
+const GATES = path.join(DATA, 'gates'); // STORE spec 0001: one folder per approve run in flight (budget, slots, decisions)
 const BRAIN = cfg.brainPath;
 const NOTES_DIR = path.join(BRAIN, 'Agents Office');
 const CLI_CWD = path.join(os.tmpdir(), 'agents-office-cli'); // an empty cwd: no CLAUDE.md, no repo context
@@ -64,6 +68,7 @@ const version = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT,
 const RUN_TIMEOUT = Math.max(60, +cfg.timeout || 300) * 1000; // agents with tools take longer than a plain draft
 { const m = normModel(cfg.model); if (cfg.model && !m) console.warn(`config: model must be sonnet, opus or fable (got "${cfg.model}") — using ${DEFAULT_MODEL}`); cfg.model = m || DEFAULT_MODEL; } // V3.6: three models, by name
 { const e = normEffort(cfg.effort); if (cfg.effort && !e) console.warn(`config: effort must be low, medium, high, xhigh or max (got "${cfg.effort}") — using the model's own`); cfg.effort = e || ''; } // V3.6.1: the office's effort, empty = the model's own
+for (const w of cfg.problems || []) console.warn('config:', w);
 mcp.configure(cfg);
 const TEAMS = teams.settings(cfg); // V3.2 (16 Sep): { enabled, max }
 const roster = loadRoster(BRAIN);
@@ -118,41 +123,50 @@ function ranOn(mu, want) {
   const fam = normModel(want) || cfg.model;
   return keys.find(k => k.includes(fam)) || keys.filter(k => !/haiku/.test(k)).sort((a, b) => (mu[b].outputTokens || 0) - (mu[a].outputTokens || 0))[0] || keys[0];
 }
-async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RUN_TIMEOUT, model = cfg.model, effort = null } = {}) { // model: sonnet · opus · fable · effort: low…max or null = the model's own (src/models.js)
+// STORE (spec 0001): `only` = these exact tool names and nothing else (no web, no Chrome) · `settings` = a --settings file (the
+// approve run's call gate) · `calls` comes back: every tool_use with its result ({ id, name, input, ok, error }, ok null = no result),
+// also on the error of a timeout or a failed exit, so an approve that stops halfway still shows what went out
+async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RUN_TIMEOUT, model = cfg.model, effort = null, only = null, settings = null } = {}) { // model: sonnet · opus · fable · effort: low…max or null = the model's own (src/models.js)
   if (sdk) {
     const res = await sdk.messages.create({ model: modelId(model), max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] });
     if (res.stop_reason === 'refusal') throw new Error('Claude declined this request');
     bumpUsage(res.usage);
-    return { text: res.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim(), tools: [], usage: res.usage, modelId: res.model };
+    return { text: res.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim(), tools: [], calls: [], usage: res.usage, modelId: res.model };
   }
   fs.mkdirSync(CLI_CWD, { recursive: true });
-  const allowed = tools ? mcp.allowedTools() : [];
+  const allowed = only ? only : tools ? mcp.allowedTools() : [];
   const args = ['-p', user, '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt', system,
-    '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,Agent,NotebookEdit,Task' + (allowed.includes('WebFetch') ? '' : ',WebFetch,WebSearch')];
+    '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,Agent,NotebookEdit,Task' + (allowed.includes('WebFetch') && !only ? '' : ',WebFetch,WebSearch')];
   if (allowed.length) args.push('--allowedTools', allowed.join(','));
-  args.push(...(tools ? mcp.cliArgs() : ['--no-chrome'])); // V3.2 (16 Sep): the owner's Chrome, when tools.browser is on
+  args.push(...(tools && !only ? mcp.cliArgs() : ['--no-chrome'])); // V3.2 (16 Sep): the owner's Chrome, when tools.browser is on
+  if (settings) args.push('--settings', settings);
   args.push(...modelArgs(model, effort));
   const env = { ...process.env }; delete env.CLAUDECODE; // the CLI refuses to nest inside another Claude Code session
   return new Promise((resolve, reject) => {
     const p = spawn('claude', args, { cwd: CLI_CWD, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '', text = '', used = [], gotResult = false, usageOut = null, modelUsed = null;
-    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error(`Claude took longer than ${timeout / 1000} s`)); }, timeout);
+    let out = '', err = '', text = '', used = [], gotResult = false, usageOut = null, modelUsed = null; const calls = [];
+    const fail = e => { e.calls = calls; reject(e); };
+    const timer = setTimeout(() => { p.kill('SIGKILL'); fail(new Error(`Claude took longer than ${timeout / 1000} s`)); }, timeout);
     const feed = line => {
       if (!line.trim()) return;
       let j; try { j = JSON.parse(line); } catch { return; }
       if (j.type === 'system' && j.subtype === 'init') mcp.fromInit(j);
-      if (j.type === 'assistant' && j.message?.content) for (const b of j.message.content) if (b.type === 'tool_use' && b.name && !used.includes(b.name)) used.push(b.name);
+      if (j.type === 'assistant' && j.message?.content) for (const b of j.message.content) if (b.type === 'tool_use' && b.name) { if (!used.includes(b.name)) used.push(b.name); calls.push({ id: b.id, name: b.name, input: b.input, ok: null, error: null }); }
+      if (j.type === 'user' && Array.isArray(j.message?.content)) for (const b of j.message.content) if (b.type === 'tool_result') {
+        const c = calls.find(x => x.id === b.tool_use_id); if (!c) continue;
+        c.ok = !b.is_error; if (b.is_error) c.error = (typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(x => x.text || '').join(' ') : '').trim().slice(0, 500) || 'the tool returned an error';
+      }
       if (j.type === 'result') { gotResult = true; text = String(j.result || '').trim(); if (j.is_error && !text) text = ''; usageOut = j.usage || null; modelUsed = ranOn(j.modelUsage, model); }
     };
     p.stdout.on('data', d => { out += d; let i; while ((i = out.indexOf('\n')) >= 0) { feed(out.slice(0, i)); out = out.slice(i + 1); } });
     p.stderr.on('data', d => { err += d; });
-    p.on('error', e => { clearTimeout(timer); reject(new Error(e.code === 'ENOENT' ? 'Claude Code is not installed (claude not found on PATH)' : e.message)); });
+    p.on('error', e => { clearTimeout(timer); fail(new Error(e.code === 'ENOENT' ? 'Claude Code is not installed (claude not found on PATH)' : e.message)); });
     p.on('close', code => {
       clearTimeout(timer); feed(out);
-      if (code !== 0 && !gotResult) return reject(new Error(`claude exited ${code}${err ? ': ' + err.trim().slice(0, 300) : ''}`));
+      if (code !== 0 && !gotResult) return fail(new Error(`claude exited ${code}${err ? ': ' + err.trim().slice(0, 300) : ''}`));
       if (!gotResult) { try { text = String(JSON.parse(out).result || '').trim(); } catch { text = out.trim(); } }
       bumpUsage(usageOut);
-      resolve({ text, tools: used, usage: usageOut, modelId: modelUsed });
+      resolve({ text, tools: used, calls, usage: usageOut, modelId: modelUsed });
     });
   });
 }
@@ -230,8 +244,8 @@ function agentSystem(a, index, read, { extra = '', words = 260 } = {}) {
     'If you used a tool, say so in one line at the end ("Used: Gmail — searched the client thread").\n\n' +
     `${mcp.promptText(a.tools)}\n\nCOMPANY NOTES\n${businessContext(index)}\n\nNOTES YOU READ FOR THIS TASK\n${contextText(index, read)}`;
 }
-const modeLineFor = (mode, task) => mode === 'draft' ? '\nPrepare everything, but send, post, pay or change NOTHING outside this machine: the owner reads this first and approves it. End with one line saying exactly what will go out when approved (or that nothing needs to).'
-  : mode === 'approve' ? `\nThe owner has APPROVED the draft below. Carry out the outbound step now, exactly as drafted, with your tools (send, post, update). If a tool you need is not connected, say so and show what you would have sent. Then report in one short section: what went out, to whom, and anything that did not.\nApproved draft:\n${task.draft || task.result}` : '';
+// STORE (spec 0001): a draft ends with its actions block (role 'single' or 'lead'; a team 'piece' writes none); the approve step is actions.approve, not a mode line
+const modeLineFor = (mode, task, role = 'single') => mode === 'draft' ? actions.draftLine(role) : '';
 const pickFor = (task, a) => { // model + effort: four places, one precedence (task > routine > agent > office)
   const pick = modelFor({ task: task.model, routine: task.routineModel, agent: a.model, office: cfg.model });
   const eff = effortFor({ task: task.effort, routine: task.routineEffort, agent: a.effort, office: cfg.effort, model: pick.model });
@@ -241,7 +255,6 @@ const pickFor = (task, a) => { // model + effort: four places, one precedence (t
 function persist(task) { const l = load(); const i = l.findIndex(t => t.id === task.id); if (i >= 0) { l[i] = task; save(l); } }
 async function run(task, feedback, mode) { // mode: undefined (a task from the bar) · 'routine' (read-only routine) · 'draft' (routine that waits for the OK) · 'approve' (the owner ticked it)
   if (task.team && TEAMS.enabled) { // V3.2 (16 Sep): a team task — the lead plans, the desks work at once, the lead writes the final
-    if (mode === 'approve') return runTeamLead(task, feedback, mode); // the outbound step after the OK is the lead's alone
     if (feedback && task.team.pieces?.length) return runTeamLead(task, feedback, mode); // "revise: …" reworks the final from the same pieces
     return runTeam(task, mode);
   }
@@ -254,7 +267,7 @@ async function run(task, feedback, mode) { // mode: undefined (a task from the b
     : task.dueAt ? `\nThis task was scheduled in advance for ${new Date(task.dueAt).toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} and is running now; the owner is not at the keyboard${task.late ? ' and this run is late' : ''}. Do the work for now.` : '';
   const modeLine = modeLineFor(mode, task);
   const user = `Task: ${task.title}\nOwner's request: ${task.text}` + (task.plan?.length ? `\nAgreed plan: ${task.plan.join(' → ')}` : '') + routineLine + modeLine +
-    (feedback && mode !== 'approve' ? `\n\nThe owner reviewed your previous version and asked for changes: "${feedback}"\nPrevious version:\n${task.result}` : '');
+    (feedback ? `\n\nThe owner reviewed your previous version and asked for changes: "${feedback}"\nPrevious version:\n${task.result}` + (mode === 'draft' ? actions.reworkLine(task.actions) : '') : '');
   const { pick, eff } = pickFor(task, a);
   const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort });
   if (!text) throw new Error('Claude returned nothing');
@@ -287,7 +300,7 @@ async function runTeam(task, mode) {
     try {
       const read = relevantNotes(index, dept, piece.title + ' ' + piece.text, 3);
       const system = agentSystem(a, index, read, { extra: teams.teamSection({ me: a, lead, pieces: task.team.pieces, nameOf }), words: 220 });
-      const user = `Task (the whole request, for context): ${task.title}\nOwner's request: ${task.text}\n\nYOUR PIECE: ${piece.title}\n${piece.text}` + routineLineFor(task) + (mode === 'draft' ? modeLineFor('draft', task) : '');
+      const user = `Task (the whole request, for context): ${task.title}\nOwner's request: ${task.text}\n\nYOUR PIECE: ${piece.title}\n${piece.text}` + routineLineFor(task) + modeLineFor(mode, task, 'piece');
       const { pick, eff } = pickFor(task, a);
       const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort });
       const { body, messages } = teams.parseMessages(text, ids);
@@ -306,7 +319,7 @@ async function runTeamLead(task, feedback, mode) {
   const index = vaultIndex();
   const read = relevantNotes(index, lead.department, task.title + ' ' + task.text);
   const system = agentSystem(lead, index, read, { extra: `TEAM\nYou lead this team. The pieces below were done by your teammates (one of them may be yours). You write the finished deliverable from them.`, words: 450 });
-  const user = teams.synthPrompt({ task, pieces: tm.pieces || [], messages: tm.messages || [], nameOf, feedback: mode === 'approve' ? null : feedback }) + routineLineFor(task) + modeLineFor(mode, task);
+  const user = teams.synthPrompt({ task, pieces: tm.pieces || [], messages: tm.messages || [], nameOf, feedback }) + routineLineFor(task) + modeLineFor(mode, task, 'lead') + (feedback && mode === 'draft' ? actions.reworkLine(task.actions) : '');
   const { pick, eff } = pickFor(task, lead);
   const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort, maxTokens: 6000 });
   if (!text) throw new Error('Claude returned nothing');
@@ -319,8 +332,8 @@ function writeNote(task) { // the deliverable becomes a note in the brain, linke
   fs.mkdirSync(NOTES_DIR, { recursive: true });
   const a = AGENTS.find(x => x.id === task.agent);
   const name = `${new Date(task.doneAt).toISOString().slice(0, 10)} ${slug(task.title)}`;
-  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
-    `# ${task.title}\n\n${task.result}\n\n---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf);
+  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
+    `# ${task.title}\n\n${task.result}\n\n${task.approved && Array.isArray(task.actions) ? actions.noteSection(task.actions, task) + '\n' : ''}---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf); // STORE spec 0001: what went out, per action
   fs.writeFileSync(path.join(NOTES_DIR, name + '.md'), body);
   return name;
 }
@@ -363,18 +376,38 @@ function fire(r, { due = Date.now(), late = false, by = 'routine' } = {}) { // t
   enqueue(() => runServerTask(task.id));
   return task;
 }
+// STORE (spec 0001): the approved actions only, one gated Claude run (actions.approve + gate.mjs); outcomes from the real calls
+async function approveRun(task) {
+  const a = AGENTS.find(x => x.id === task.agent); const { pick, eff } = pickFor(task, a);
+  const r = await actions.approve(task, { agent: a, deptName: DEPTS[a.department].name, business: cfg.name, servers: mcp.usable(), sdk: !!sdk, dir: path.join(GATES, task.id), ask: askX, model: pick.model, effort: eff.effort });
+  const report = r.text || (r.error ? 'The run stopped: ' + r.error + '. The outcomes below come from the calls that were seen.' : '');
+  Object.assign(task, { actions: r.actions, gateDenied: r.gateDenied.length ? r.gateDenied : undefined, gateFailed: r.gateFailed || undefined, result: (task.draft || task.result) + '\n\n---\nAFTER YOUR OK\n' + report,
+    approved: true, approvedAt: Date.now(), error: !!r.error, tools: [...new Set([...(task.tools || []), ...toolKeys(r.tools)])], used: [...new Set([...(task.used || []), ...mcp.namesOf(r.tools)])], modelUsed: pick.model, modelFrom: pick.from, effortUsed: eff.effort || '', effortFrom: eff.from });
+  for (const d of r.gateDenied) console.warn(`  ⛔ ${task.id} gate blocked ${d.tool}`);
+  if (r.gateFailed) console.warn(`  ⚠ ${task.id} an MCP call ran with no gate decision on record — check what went out`);
+  console.log(`  ↳ ${task.id} actions: ${r.actions.map(x => x.id + ' ' + actions.STATUS_TEXT[x.outcome.status]).join(' · ')}`);
+}
+function finishApproved(task) { delete task.approving; task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); }
 async function runServerTask(id, { feedback, approve } = {}) {
   let list = load(); const task = list.find(t => t.id === id); if (!task) return null;
-  task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; save(list);
+  task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; if (approve) task.approving = true; save(list); // approving: a restart mid-send is closed out at startup (AC-15)
   try {
-    const out = await run(task, feedback, approve ? 'approve' : task.needsOk ? 'draft' : 'routine');
-    if (approve) { task.result = (task.draft || task.result) + '\n\n---\nAFTER YOUR OK\n' + out.result; task.approved = true; task.approvedAt = Date.now(); }
-    else task.result = out.result;
-    Object.assign(task, { read: out.read, tools: [...new Set([...(task.tools || []), ...out.tools])], used: [...new Set([...(task.used || []), ...out.used])], skills: out.skills, error: false, modelUsed: out.modelUsed, modelFrom: out.modelFrom, modelId: out.modelId, effortUsed: out.effortUsed, effortFrom: out.effortFrom, ...(out.team ? { team: out.team } : {}) });
-    if (task.needsOk && !approve) { task.state = 'waiting'; task.draft = out.result; task.waitingAt = Date.now(); task.ask = routines.askLine(task); }
-    else { task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); await rebuildGraph(); }
+    if (approve) { await approveRun(task); finishApproved(task); await rebuildGraph(); }
+    else {
+      const out = await run(task, feedback, task.needsOk ? 'draft' : 'routine');
+      task.result = out.result;
+      Object.assign(task, { read: out.read, tools: [...new Set([...(task.tools || []), ...out.tools])], used: [...new Set([...(task.used || []), ...out.used])], skills: out.skills, error: false, modelUsed: out.modelUsed, modelFrom: out.modelFrom, modelId: out.modelId, effortUsed: out.effortUsed, effortFrom: out.effortFrom, ...(out.team ? { team: out.team } : {}) });
+      if (task.needsOk) { // STORE spec 0001: the draft's actions block → actions + actionsRead; only the fence leaves the draft
+        for (const k of ['actions', 'actionsRead', 'actionsWhy', 'gateDenied', 'gateFailed']) delete task[k];
+        const d = actions.fromDraft(out.result, { servers: mcp.usable(), currency: cfg.currency, sdk: !!sdk });
+        Object.assign(task, { result: d.body, draft: d.body, actions: d.actions, actionsRead: d.actionsRead, ...(d.actionsWhy ? { actionsWhy: d.actionsWhy } : {}) });
+        task.state = 'waiting'; task.waitingAt = Date.now(); task.ask = routines.askLine(task);
+        console.log(`  ↳ ${task.id} actions ${d.actionsRead === 'ok' ? actions.summary(d.actions) : 'unreadable: ' + d.actionsWhy}`);
+      }
+      else { task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); await rebuildGraph(); }
+    }
   } catch (e) {
-    Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });
+    delete task.approving; Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });
   }
   list = load(); const i = list.findIndex(t => t.id === task.id); if (i >= 0) list[i] = task; save(list);
   console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
@@ -450,6 +483,12 @@ async function routinesChat(a, text) {
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const body = req => new Promise((resolve, reject) => { let s = ''; req.on('data', d => { s += d; }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); });
 
+{ // STORE spec 0001 (AC-15): an approve the office stopped in the middle of is closed out, never re-run; leftover gate folders go
+  const l = load(); const stopped = l.filter(t => t.state === 'doing' && t.approving);
+  for (const t of stopped) { actions.closeOut(t); try { t.note = writeNote(t); } catch (e) { console.warn('note:', e.message); } console.warn(`⚠ ${t.id} the office stopped while sending "${t.title}" — marked done, outcomes unknown, check before resending`); }
+  if (stopped.length) save(l);
+  fs.rmSync(GATES, { recursive: true, force: true });
+}
 await rebuildGraph();
 const discovering = mcp.discover().then(l => { console.log(`  connectors: ${l.filter(s => s.status === 'connected').length} connected of ${l.length} (claude mcp list)`); return l; });
 const agentsOut = () => { const setup = setupMap(); return AGENTS.map(a => ({ id: a.id, name: a.name, role: a.role, does: a.does, tools: a.tools, brief: a.brief || '', model: a.model || '', effort: a.effort || '', skills: skills.names(a), lessons: learn.count(BRAIN, a.id), department: a.department, lead: a.lead,
@@ -516,6 +555,18 @@ const server = http.createServer(async (req, res) => {
       const task = load().find(t => t.id === m[1]);
       if (!task) return json(res, 404, { error: 'no such task' });
       if (task.state !== 'waiting') return json(res, 400, { error: 'this task is not waiting for your OK' });
+      if (m[2] === 'approve') { // STORE spec 0001: an unreadable list locks APPROVE; an empty one is done with no Claude run (AC-4, AC-7, AC-12)
+        const rd = actions.readOf(task);
+        if (!rd.ok) return json(res, 400, { error: `the actions in this draft could not be read: ${rd.why}. Send it back with REJECT.` });
+        if (!task.actions.length) {
+          const list = load(); const t = list.find(x => x.id === task.id);
+          Object.assign(t, { result: (t.draft || t.result) + '\n\n---\nAFTER YOUR OK\nNothing went out, this draft had no outbound actions.', approved: true, approvedAt: Date.now(), error: false }); delete t.ask;
+          finishApproved(t); save(list); await rebuildGraph();
+          console.log(`✅ ${t.id} approved — nothing goes out, done (note: ${t.note})`);
+          return json(res, 200, { ok: true, id: t.id, state: 'done' });
+        }
+        const list = load(); const t = list.find(x => x.id === task.id); Object.assign(t, { state: 'doing', startedAt: Date.now(), approving: true }); delete t.ask; save(list); // off WAITING now: a second APPROVE while this one is queued is refused, never a second send
+      }
       const { feedback } = m[2] === 'reject' ? await body(req) : {};
       const note = String(feedback || '').trim();
       console.log(`${m[2] === 'approve' ? '✅' : '↩'} ${task.id} ${m[2] === 'approve' ? 'approved — ' + agentName(task.agent) + ' is sending' : 'sent back: ' + note.slice(0, 80)}`);

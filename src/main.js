@@ -617,6 +617,7 @@ function renderChat(id) {
     if (m.who === 'file') return `
       <div class="m-file" data-i="${i}">
         <div class="f-head"><span>${m.icon}</span><div><div class="f-name">${esc(m.name)}</div><div class="f-meta">${esc(m.meta)}</div></div></div>
+        ${m.mock ? `<div class="a-mock">${m.mock}</div>` : ''}
         <pre>${esc(m.content)}</pre>
       </div>`;
     if (m.who === 'appr') return `
@@ -625,7 +626,7 @@ function renderChat(id) {
         <div class="a-ask">${esc(m.text)}</div>
         ${m.mock ? `<div class="a-mock">${m.mock}</div>` : ''}
         ${m.pending
-          ? '<div class="a-btns"><button class="a-yes">APPROVE</button><button class="a-no">REJECT</button></div>'
+          ? `<div class="a-btns"><button class="a-yes"${m.locked ? ` disabled title="${esc(m.lockWhy || 'locked')}"` : ''}>APPROVE</button><button class="a-no">REJECT</button></div>` // STORE spec 0001: an unreadable action list locks APPROVE
           : `<div class="a-done">${m.approved ? '✓ Approved' : '✗ Rejected'} by AJ</div>`}
       </div>`;
     return '';
@@ -964,10 +965,11 @@ function setStuckLive(id, ask, sid) {
 function resolveApproval(id, approved) {
   const r = R[id];
   if (!r || r.state !== 'stuck') return;
+  const msg = chatHist[id] && [...chatHist[id]].reverse().find(m => m.who === 'appr' && m.pending);
+  if (approved && msg && msg.locked) { chatPush(id, { who: 'agent', text: `I can't send this one: ${msg.lockWhy}. Press REJECT (or say reject) and tell me what to change.` }); return; } // STORE spec 0001
   r.state = 'working';
   r.ask = null;
   r.warn.visible = false;
-  const msg = chatHist[id] && [...chatHist[id]].reverse().find(m => m.who === 'appr' && m.pending);
   if (msg) { msg.pending = false; msg.approved = approved; }
   // visible reaction in the scene: cheer + ✅, or slump + ❌
   const now = performance.now();

@@ -224,6 +224,17 @@ to WAITING ON APPROVAL and the agent stands and waves. **APPROVE** and the agent
 outbound step with its tools; **REJECT**, say what should change, and it comes back reworked,
 and that correction is remembered. Switch the OK off per routine for the ones you trust.
 
+The draft also lists every outbound action it wants to take: what kind (a reply, a refund, a
+discount…), to whom, how much, and the exact connector tool. The approval card shows one line
+per action, and the WAITING row shows the count and the totals ("3 actions · 912.00 USD").
+APPROVE runs exactly those tools, once per listed action: a hook the office hands Claude Code
+(`gate.mjs`) blocks any other tool, any extra call, the web and the browser. Each action then
+reads done, failed, not done or unknown, taken from the real tool calls, and the brain note
+gets an `## Actions` section. A draft whose list cannot be read keeps APPROVE locked until you
+REJECT it for a redraft; a list that says nothing goes out approves without a Claude run.
+Amounts with no currency use `currency` in `office.config.json` (default `USD`). Browser
+actions cannot be approved yet.
+
 The clock lives in the server: `npm start` has to be running, but the page does not have to be
 open. A run missed while the machine was asleep or the office was off is caught up once when it
 comes back, marked LATE; never more than one catch-up per routine. Every firing is a line in the
@@ -266,8 +277,8 @@ all IN PROGRESS together; each finished piece lands in that teammate's own chat 
 the lead as a 📋; the lead's card finishes last with the combined result, and the note in your
 brain carries the final, then every piece under its own heading, then the notes they left each
 other. `revise: …` to the lead reworks the final from the same pieces without re-running them.
-A team task that needs your OK waits like any other; APPROVE and the lead alone does the outbound
-step. Routines can be teams too (`"team": true` in `routines.json`; the lead owns it).
+A team task that needs your OK waits like any other; the lead's final carries the one action
+list, and APPROVE runs it the same way, as the lead alone. Routines can be teams too (`"team": true` in `routines.json`; the lead owns it).
 
 Why the office builds this itself: Claude Code has its own agent teams, but it only spawns
 teammates in an interactive terminal, never in the headless runs the office makes. What runs here

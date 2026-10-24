@@ -25,6 +25,7 @@ import { P, rnd, ri } from './v1data.js';
 import { applyTasks, PROFILE, titleCase } from './profile.js';
 import { parseWhen, describe, nextRun, fromPicker, untilText } from './when.js';
 import { initCalendar } from './calendar.js'; // V3.2.1 (16 Sep 2026): the calendar on P
+import { readOf, summary as actSummary, cardLines, money as actMoney, STATUS_TEXT } from './actions.js'; // STORE (24 Oct 2026): a draft's outbound actions (spec 0001)
 import { MODEL_KEYS, MODELS, DEFAULT_MODEL, modelName, normModel, FROM_TEXT , EFFORT_KEYS, EFFORT_NAME, normEffort, effortName, effortFor } from './models.js';
 
 const SEGMENTS = ['roofing', 'HVAC', 'dental', 'logistics', 'fitness', 'property', 'landscaping', 'legal'];
@@ -220,7 +221,7 @@ export function initTasks(ctx) {
       return;
     }
     chatPush(t.agent, { who: 'file', icon: t.error ? '⚠' : '📄', name: (t.note || slug(t.title)) + '.md',
-      meta: `${t.error ? 'could not complete' : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)} · click to view`, content: t.result });
+      meta: `${t.error ? 'could not complete' : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)} · click to view`, content: t.result, mock: t.live ? outcomesMock(t) : '' });
     if (!t.error) chatPush(t.agent, { who: 'agent', text: `Done — "${t.title}"${t.routine ? ` (routine, ${t.when}${t.late ? ', ran late' : ''})` : ''} is ready above${t.team?.members?.length ? ` — the team was ${membersText(t)} and me` : ''}${t.read && t.read.length ? ` (I read ${t.read.slice(0, 3).join(', ')})` : ''}${t.used && t.used.length ? `. Used ${t.used.join(', ')}` : ''}. Say "revise: …" and I'll change it.` });
     feedPush(R[t.agent], '📄', `Delivered: ${t.title}`);
     if (brain && t.read) for (const n of t.read.slice(0, 2)) brain.readNote(t.agent, n);
@@ -576,7 +577,23 @@ export function initTasks(ctx) {
     }
     apply(t, st);
   }
-  function copyResult(t, st) { t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.draft = st.draft; t.approved = !!st.approved; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; } }
+  function copyResult(t, st) { t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.draft = st.draft; t.approved = !!st.approved; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
+    t.actions = st.actions; t.actionsRead = st.actionsRead; t.actionsWhy = st.actionsWhy; t.gateDenied = st.gateDenied; t.gateFailed = !!st.gateFailed; } // STORE spec 0001
+  // STORE (spec 0001): the approval card's list of outbound actions, and what happened to each once approved
+  const mkDoc = (head, rows) => `<div class="mk mk-doc"><div class="d-brand">${head}</div>${rows}</div>`;
+  function actionsMock(t) {
+    const rd = readOf(t);
+    if (!rd.ok) return mkDoc('OUTBOUND ACTIONS', `<div class="d-p tp-amber">Actions unreadable: ${esc(rd.why)}. APPROVE stays locked; send it back with REJECT to redraft it.</div>`);
+    if (!t.actions.length) return mkDoc('OUTBOUND ACTIONS', '<div class="d-p">Nothing goes out.</div>');
+    return mkDoc(`OUTBOUND ACTIONS · ${esc(actSummary(t.actions).toUpperCase())}`, cardLines(t.actions).map(l => `<div class="d-line"><span>${esc(l.head)}</span><b>${esc(l.money)}</b></div><div class="d-p">${esc(l.summary)} · ${esc(l.tool)}</div>`).join(''));
+  }
+  function outcomesMock(t) {
+    if (!t.approved || !Array.isArray(t.actions)) return '';
+    const rows = t.actions.map(a => { const o = a.outcome || {}; return `<div class="d-line"><span>${esc(`${a.id} · ${String(a.kind).replace(/_/g, ' ')} · to ${a.to}${actMoney(a) ? ' · ' + actMoney(a) : ''}`)}</span><b class="${o.status === 'done' ? '' : o.status === 'failed' ? 'tp-red' : 'tp-amber'}">${esc(STATUS_TEXT[o.status] || 'not run')}</b></div>` +
+      (o.error ? `<div class="d-p">${esc(o.error)}</div>` : '') + (o.flag ? `<div class="d-p tp-amber">flag: ${esc(o.flag)}</div>` : ''); }).join('');
+    return mkDoc('WHAT WENT OUT', (rows || '<div class="d-p">Nothing went out, this draft had no outbound actions.</div>') +
+      (t.gateDenied?.length ? `<div class="d-p tp-amber">Blocked by the gate: ${esc(t.gateDenied.map(d => d.tool).join(', '))}</div>` : '') + (t.gateFailed ? '<div class="d-p tp-red">The gate did not run for every call. Check what went out.</div>' : ''));
+  }
   // V3.2 (16 Sep): the server's team state → piece cards on the teammates' desks, notes as 💬, the lead's members list
   const seenNotes = new Set();
   function syncTeam(t, st, quiet) {
@@ -625,13 +642,15 @@ export function initTasks(ctx) {
   }
   function askApproval(t) { // D1: the draft lands in the chat with APPROVE / REJECT and the agent stands and waves
     chatPush(t.agent, { who: 'file', icon: '📝', name: slug(t.title) + '.md', meta: `draft · waiting for your OK · ${timeStr(t.changedAt)} · click to view`, content: t.draft || t.result });
-    chatPush(t.agent, { who: 'appr', text: t.ask || `"${t.title}" is ready — approve to send it, reject to tell me what to change.`, pending: true, live: true });
+    const rd = readOf(t); // STORE spec 0001: the card lists the actions; an unreadable list locks APPROVE
+    chatPush(t.agent, { who: 'appr', text: t.ask || `"${t.title}" is ready — approve to send it, reject to tell me what to change.`, pending: true, live: true, mock: actionsMock(t), locked: !rd.ok, lockWhy: rd.why });
     feedPush(R[t.agent], '⏸', `Waiting for your OK: ${t.title}`);
     if (setStuck) setStuck(t.agent, t.ask, t.sid);
   }
   const pendingFeedback = {}; // agentId → sid after REJECT: the owner's next chat line is the note
   function resolveLive(agentId, approved) { // APPROVE / REJECT on a live draft (main.js calls this instead of the demo onResolve)
     const t = tasks.find(x => x.live && x.agent === agentId && x.state === 'waiting'); if (!t) return false;
+    if (approved && !readOf(t).ok) return false; // STORE spec 0001: the server refuses it too (400)
     if (approved) { post(`/tasks/${t.sid}/approve`); toDoing(t); chatPush(agentId, { who: 'agent', text: '✓ Approved — sending it now. It lands here when it is done.' }); }
     else { pendingFeedback[agentId] = t.sid; chatPush(agentId, { who: 'agent', text: 'Understood. What should change? Tell me here and I will redo it — it comes back for your OK.' }); }
     return true;
@@ -680,7 +699,8 @@ export function initTasks(ctx) {
         if (!agentOf(st.agent)) continue;
         if (st.state === 'done') {
           const t = mk({ agent: st.agent, title: st.title, text: st.text, plan: st.plan, by: 'you', live: true, sid: st.id, state: 'done',
-            doneAt: st.doneAt, changedAt: st.doneAt, addedAt: st.addedAt, result: st.result, read: st.read, note: st.note, tools: st.tools || [], used: st.used || [], error: !!st.error, last: 'done' });
+            doneAt: st.doneAt, changedAt: st.doneAt, addedAt: st.addedAt, result: st.result, read: st.read, note: st.note, tools: st.tools || [], used: st.used || [], error: !!st.error, last: 'done',
+            approved: !!st.approved, actions: st.actions, gateDenied: st.gateDenied, gateFailed: !!st.gateFailed }); // STORE spec 0001: what went out shows on reload too
           if (st.team) syncTeam(t, st, true);
           deliver(t);
         } else reconcile(st); // next, doing (the server may be running it), waiting for your OK, scheduled for a date — pick it up again
@@ -722,7 +742,7 @@ export function initTasks(ctx) {
         return `${who} · ${w < 60000 ? 'just added' : 'waiting ' + span(w)} · ${src}${teamBit(t)}${modelBit(t)}`;
       }
       case 'doing': return `${who}${t.live ? (t.approved === undefined && t.draftAt ? ' · sending with Claude' : t.team?.members?.length ? ' · leading the team with Claude' : ' · working with Claude') : t.agent === 'vid' ? ' · rendering' : t.teamHold ? ' · waiting on the pieces' : ''}${t.routine ? ' · routine' : ''}${teamBit(t)}${modelBit(t)}`;
-      case 'waiting': return `<span class="tp-amber">waiting ${span(now - t.changedAt)} for your tick</span> · ${who}${t.routine ? ' · routine draft' : ''}${teamBit(t)}${modelBit(t)}`;
+      case 'waiting': return `<span class="tp-amber">waiting ${span(now - t.changedAt)} for your tick</span> · ${who}${t.routine ? ' · routine draft' : ''}${t.live && t.draftAt ? ' · ' + (readOf(t).ok ? esc(actSummary(t.actions)) : '<span class="tp-amber">actions unreadable</span>') : ''}${teamBit(t)}${modelBit(t)}`; // STORE spec 0001: "3 actions · 912.00 USD"
       case 'scheduled': return `${who} · runs ${esc(untilText(t.dueAt))} · ${new Date(t.dueAt).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${timeStr(t.dueAt)}${t.needsOk ? ' · waits for your OK' : ''}${teamBit(t)}${modelBit(t)}`;
       case 'done': return `${who} · done ${timeStr(t.doneAt)}${t.approved ? (t.live ? ' · sent after your OK' : ' · approved') : ''}${t.late ? ' · <span class="tp-late">ran late</span>' : ''}${teamBit(t)}${modelBit(t)}${t.live ? (t.error ? ' · <span class="tp-amber">failed</span>' : ' · <span class="tp-res">result ready →</span>') : ''}`;
     }
@@ -1014,5 +1034,5 @@ export function initTasks(ctx) {
   const calendar = initCalendar({ tasks, routines, agentOf, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, create: createScheduled, createRoutine: createRoutineAt, cancelTask: cancelScheduled, rtAct, openAgent: (id, tab) => openAgent && openAgent(id, tab), esc, isLive: () => live, officeModel: () => officeModel, MODEL_KEYS, modelName, business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
   return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, createScheduled, cancelScheduled,
            handleChat, addTask, revise, rowHTML, setDept, tasks, panelWidth: () => panel.offsetWidth, isLive: () => live,
-           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
+           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
 }

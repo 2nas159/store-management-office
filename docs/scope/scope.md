@@ -60,14 +60,14 @@ Marketing, Operations and Delivery get routines too, so daily posts, inventory c
 
 ### 3. Outbound action list on drafts · in-progress
 Today a draft that waits for the OK is free text, so nothing can tell a $12 refund from a $900 one. The draft step should also name each outbound action it wants to take (what kind, to whom, how much), so a rule can read it and the owner can see it at a glance.
-spec [0001](../specs/0001-outbound-action-list-drafts.md)
+spec [0001](../specs/0001-outbound-action-list-drafts.md) · code in `actions.mjs`, `gate.mjs`, `src/actions.js`, `serve.mjs`, `src/tasks.js`, `src/main.js`, `check.mjs`
 **Done when:** every draft waiting for the OK carries a list of the outbound actions it will take, the panel shows them, and approving runs exactly those actions and no others.
 - [x] Design it (spec): `/architect outbound action list on drafts`
-- [ ] Build it: `/develop outbound action list on drafts`
-  - [ ] Draft side thread: actions block parsed and validated, card lines and row totals (AC-1, AC-2, AC-5, AC-6)
-  - [ ] Approve side thread: call gate, short approve run, outcomes from real calls, empty list path (AC-7, AC-8, AC-9)
-  - [ ] Unreadable and recovery: locked approve, old drafts, restart close out (AC-3, AC-4, AC-12, AC-15)
-  - [ ] The rest: brain note section, rework, teams, missing connectors, argument matching (AC-9, AC-10, AC-11, AC-13, AC-14)
+- [x] Build it: `/develop outbound action list on drafts`
+  - [x] Draft side thread: actions block parsed and validated, card lines and row totals (AC-1, AC-2, AC-5, AC-6)
+  - [x] Approve side thread: call gate, short approve run, outcomes from real calls, empty list path (AC-7, AC-8, AC-9)
+  - [x] Unreadable and recovery: locked approve, old drafts, restart close out (AC-3, AC-4, AC-12, AC-15)
+  - [x] The rest: brain note section, rework, teams, missing connectors, argument matching (AC-9, AC-10, AC-11, AC-13, AC-14)
 - [ ] Verify it: `/check verify outbound action list on drafts`
 - [ ] Test it: `/test outbound action list on drafts`
 

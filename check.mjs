@@ -342,6 +342,137 @@ await step('config: browser and teams default on, max 4', async () => {
   const c = loadConfig(); if (c.tools.browser !== true || c.teams.enabled !== true || c.teams.max !== 4) throw new Error(JSON.stringify({ tools: c.tools, teams: c.teams }));
 });
 
+/* ---------- 1f. outbound action lists + the call gate (STORE, spec 0001) ---------- */
+const SERVERS = [{ id: 'claude_ai_Gmail', tools: ['send_message', 'search_threads'] }, { id: 'shopify', tools: ['refund_create', 'discount_create'] }, { id: 'slack', tools: [] }];
+await step('actions: the last actions block is read, validated and taken out of the draft, the prose stays', async () => { // AC-1, AC-2, AC-5
+  const A = await import('./actions.mjs');
+  const text = 'Heading\n\nDraft body.\n\n```actions\n[{"kind":"other","tool":"mcp__slack__post","to":"x","summary":"old"}]\n```\nmiddle\nGoes out: a reply and a refund.\n\n```actions\n[\n {"kind":"reply","tool":"mcp__claude_ai_Gmail__send_message","to":" jane@example.com ","summary":"Reply to Jane","content":"Hi Jane"},\n {"kind":"refund","tool":"mcp__shopify__refund_create","to":"#1042","amount":"12.50","summary":"Refund the shipping"},\n {"kind":"discount","tool":"mcp__shopify__discount_create","to":"jane@example.com","percent":10,"currency":"usd","summary":"10% off the next order"},\n {"kind":"post","tool":"mcp__slack__anything","to":"#orders","summary":"Tell the team"}\n]\n```\nUsed: Gmail';
+  const p = A.parse(text); if (p.why) throw new Error(p.why);
+  if (p.list.length !== 4 || /```actions/.test(p.body.split('middle')[1]) || !/Goes out: a reply and a refund\.\n\nUsed: Gmail$/.test(p.body) || !/^Heading\n\nDraft body\./.test(p.body)) throw new Error('fence or prose wrong: ' + JSON.stringify(p.body));
+  const v = A.validate(p.list, { servers: SERVERS, currency: 'EUR' }); if (v.why) throw new Error(v.why);
+  const [r, f, d] = [v.actions[0], v.actions[1], v.actions[2]];
+  if (r.id !== 'a1' || r.to !== 'jane@example.com' || r.amount !== null || r.currency !== null || r.content !== 'Hi Jane') throw new Error('reply: ' + JSON.stringify(r));
+  if (f.amount !== 12.5 || f.currency !== 'EUR' || d.percent !== 10 || d.currency !== null) throw new Error('amounts: ' + JSON.stringify([f, d]));
+  const d2 = A.fromDraft(text, { servers: SERVERS, currency: 'USD' }); if (d2.actionsRead !== 'ok' || d2.actions.length !== 4 || d2.body !== p.body) throw new Error('fromDraft: ' + JSON.stringify(d2).slice(0, 160));
+  const e = A.fromDraft('Nothing needs to go out.\n```actions\n[]\n```', { servers: SERVERS }); if (e.actionsRead !== 'ok' || e.actions.length || e.body !== 'Nothing needs to go out.') throw new Error('empty list: ' + JSON.stringify(e));
+  return 'last fence wins · prose kept · "12.50" → 12.5 EUR from config · percent discount · a server with no known tools takes any tool · [] reads as nothing goes out';
+});
+await step('actions: a broken list is unreadable and names the first problem', async () => { // AC-3, AC-4, AC-5
+  const A = await import('./actions.mjs');
+  const why = (list, o = {}) => A.validate(list, { servers: SERVERS, currency: 'USD', ...o }).why || '';
+  const ok = { kind: 'reply', tool: 'mcp__claude_ai_Gmail__send_message', to: 'a@b.co', summary: 's' };
+  const cases = [
+    [[ok, { ...ok, kind: 'refund', tool: 'mcp__shopify__refund_create' }], /^action 2: refund has no amount$/],
+    [[{ ...ok, kind: 'refnd' }], /^action 1: "refnd" is not a kind/],
+    [[{ ...ok, to: '  ' }], /no recipient/],
+    [[{ ...ok, summary: 'x'.repeat(141) }], /141 characters, at most 140/],
+    [[{ ...ok, tool: 'gmail_send' }], /mcp__<server>__<tool>/],
+    [[{ ...ok, tool: 'mcp__claude-in-chrome__form_input' }], /browser/],
+    [[{ ...ok, tool: 'mcp__stripe__refund' }], /stripe is not connected or not allowed/],
+    [[{ ...ok, tool: 'mcp__claude_ai_Gmail__delete_everything' }], /has no tool named delete_everything/],
+    [[{ ...ok, kind: 'payment', amount: -5 }], /amount must be a number above 0/],
+    [[{ ...ok, kind: 'payment', amount: '12,50' }], /amount must be a number above 0/],
+    [[{ ...ok, kind: 'discount', tool: 'mcp__shopify__discount_create' }], /discount has no amount or percent/],
+    [[{ ...ok, kind: 'discount', tool: 'mcp__shopify__discount_create', percent: 120 }], /percent must be above 0 and at most 100/],
+    [[{ ...ok, kind: 'refund', amount: 3, currency: 'dollars' }], /three letter code/],
+    [[{ ...ok, content: 'x'.repeat(4001) }], /4001 characters, at most 4,000/],
+    [[ok, 'nope'], /^action 2: is not an object$/],
+    [Array(11).fill(ok), /11 actions, at most 10/],
+  ];
+  for (const [list, re] of cases) { const w = why(list); if (!re.test(w)) throw new Error(`expected ${re}, got "${w}"`); }
+  if (why([{ ...ok, tool: 'mcp__stripe__refund' }], { sdk: true })) throw new Error('the API key backend must skip the connected check');
+  if (!/browser/.test(why([{ ...ok, tool: 'mcp__claude-in-chrome__x' }], { sdk: true }))) throw new Error('the browser must stay out on the API key backend too');
+  for (const [t, w] of [['no fence here', 'the draft has no actions block'], ['```actions\n[{"kind":"reply",}]\n```', 'the actions block is not valid JSON'], ['```actions\n{"kind":"reply"}\n```', 'the actions block is not a JSON list']]) {
+    const d = A.fromDraft(t, { servers: SERVERS }); if (d.actionsRead !== 'unreadable' || d.actionsWhy !== w || d.actions.length) throw new Error(`"${t}" → ` + JSON.stringify(d));
+  }
+  const old = A.readOf({ state: 'waiting', draft: 'x' }); if (old.ok || old.why !== 'drafted before action lists, send it back to redraft it') throw new Error('old draft: ' + JSON.stringify(old)); // AC-12
+  return `${cases.length} broken lists named · API key backend skips the connected check · no fence, bad JSON, not a list · an old draft must be redrafted`;
+});
+await step('actions: the card lines and the WAITING row totals', async () => { // AC-6
+  const A = await import('./src/actions.js');
+  const list = [{ kind: 'refund', to: '#1', amount: 900, currency: 'USD', summary: 's1', tool: 't1' }, { kind: 'payment', to: 'v', amount: 12, currency: 'USD', summary: 's2', tool: 't2' }, { kind: 'discount', to: 'c', percent: 10, amount: null, currency: null, summary: 's3', tool: 't3' }];
+  if (A.summary(list) !== '3 actions · 912.00 USD') throw new Error('summary: ' + A.summary(list));
+  if (A.summary([...list, { kind: 'refund', to: 'x', amount: 5, currency: 'EUR' }]) !== '4 actions · 912.00 USD · 5.00 EUR') throw new Error('per currency: ' + A.summary([...list, { kind: 'refund', amount: 5, currency: 'EUR' }]));
+  if (A.summary([]) !== 'nothing goes out' || A.summary([list[2]]) !== '1 action') throw new Error('empty / percent only');
+  const c = A.cardLines(list); if (c[0].head !== 'refund · to #1' || c[0].money !== '900.00 USD' || c[2].money !== '10%' || c[1].tool !== 't2') throw new Error('card lines: ' + JSON.stringify(c));
+  return `${A.summary(list)} · percent discounts counted, not summed · totals per currency`;
+});
+// feed the gate one hook input; → its exit code
+const gateCall = (dir, input) => new Promise(resolve => { const p = spawn(process.execPath, [path.join(ROOT, 'gate.mjs'), dir], { stdio: ['pipe', 'ignore', 'pipe'] }); let err = ''; p.stderr.on('data', d => { err += d; }); p.on('close', code => resolve({ code, err })); p.stdin.end(typeof input === 'string' ? input : JSON.stringify(input)); });
+await step('gate: one slot per listed call, everything else blocked, and it fails closed', async () => { // AC-8
+  const A = await import('./actions.mjs'); const os = await import('node:os');
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-gate-')), 'g');
+  const settings = A.prepareGate(dir, [{ tool: 'mcp__shopify__refund_create' }, { tool: 'mcp__claude_ai_Gmail__send_message' }, { tool: 'mcp__claude_ai_Gmail__send_message' }]);
+  const s = JSON.parse(fs.readFileSync(settings, 'utf8')); const cmd = s.hooks.PreToolUse[0].hooks[0].command;
+  if (s.hooks.PreToolUse[0].matcher !== '*' || !/gate\.mjs" "/.test(cmd) || /\\/.test(cmd)) throw new Error('settings: ' + cmd);
+  const call = (id, tool) => gateCall(dir, { tool_name: tool, tool_input: {}, tool_use_id: id });
+  const r = [await call('u1', 'mcp__shopify__refund_create'), await call('u2', 'mcp__shopify__refund_create'), await call('u3', 'mcp__stripe__refund'), await call('u4', 'ToolSearch'), await call('u5', 'WebSearch')];
+  if (r.map(x => x.code).join() !== '0,2,2,0,2') throw new Error('exit codes ' + r.map(x => x.code).join());
+  if (!/approved for 1 call/.test(r[1].err) || !/not one of the approved actions/.test(r[2].err)) throw new Error('reasons: ' + r[1].err + ' | ' + r[2].err);
+  const both = await Promise.all([call('p1', 'mcp__claude_ai_Gmail__send_message'), call('p2', 'mcp__claude_ai_Gmail__send_message'), call('p3', 'mcp__claude_ai_Gmail__send_message')]); // three at once, two slots
+  if (both.filter(x => x.code === 0).length !== 2) throw new Error('parallel calls took ' + both.filter(x => x.code === 0).length + ' of 2 slots');
+  const { decisions } = A.readGate(dir);
+  if (decisions.length !== 8 || decisions.find(d => d.id === 'u2').allow !== false || decisions.find(d => d.id === 'u1').allow !== true) throw new Error('decisions: ' + JSON.stringify(decisions));
+  const bad = await gateCall(dir, 'not json'); fs.rmSync(path.join(dir, 'budget.json'));
+  const nobudget = await call('u9', 'mcp__claude_ai_Gmail__send_message'); const nodir = await gateCall(path.join(dir, 'missing'), { tool_name: 'mcp__shopify__refund_create', tool_use_id: 'x' });
+  if (bad.code !== 2 || nobudget.code !== 2 || nodir.code !== 2) throw new Error(`fails open: bad input ${bad.code}, no budget ${nobudget.code}, no folder ${nodir.code}`);
+  fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  return 'refund once then blocked · unlisted tool and web blocked · ToolSearch passes · 3 parallel calls take 2 slots · bad input, no budget, no folder all block';
+});
+await step('actions: outcomes come from the real calls, matched by arguments then order', async () => { // AC-9
+  const A = await import('./actions.mjs');
+  const T = 'mcp__shopify__refund_create', R = 'mcp__claude_ai_Gmail__send_message', P = 'mcp__slack__post', R2 = 'mcp__claude_ai_Gmail__reply';
+  const acts = [{ id: 'a1', kind: 'refund', tool: T, to: '#1', amount: 12.5, currency: 'USD' }, { id: 'a2', kind: 'refund', tool: T, to: '#2', amount: 40, currency: 'USD' }, { id: 'a3', kind: 'reply', tool: R, to: 'x@y.co' }, { id: 'a4', kind: 'post', tool: P, to: '#ch' }, { id: 'a5', kind: 'reply', tool: R2, to: 'z@y.co' }];
+  const calls = [{ id: 'c1', name: T, input: { order: '#2', amount_minor: 4000 }, ok: false, error: 'card declined' }, { id: 'c2', name: T, input: { order: '#1', refund: { amount: '12.50' } }, ok: true }, { id: 'c3', name: R, input: { to: 'someone@else.co' }, ok: null }, { id: 'c4', name: P, input: {}, ok: true }, { id: 'c5', name: R2, input: { to: 'Z@Y.CO' }, ok: true }, { id: 'c6', name: 'ToolSearch', input: {}, ok: true }];
+  const dec = [{ id: 'c1', allow: true }, { id: 'c2', allow: true }, { id: 'c3', allow: true }, { id: 'c4', allow: false, tool: P, at: 1 }];
+  const o = A.outcomes(acts, calls, dec); const st = Object.fromEntries(o.actions.map(a => [a.id, a.outcome]));
+  if (st.a1.status !== 'done' || st.a1.flag || st.a2.status !== 'failed' || st.a2.error !== 'card declined' || st.a2.flag) throw new Error('two refunds through one tool not matched by amount: ' + JSON.stringify([st.a1, st.a2]));
+  if (st.a3.status !== 'unknown' || st.a3.flag !== 'recipient not found in the call') throw new Error('no result must be unknown, with the recipient flag: ' + JSON.stringify(st.a3));
+  if (st.a4.status !== 'not_done') throw new Error('a blocked call must leave its action not done: ' + JSON.stringify(st.a4));
+  if (st.a5.status !== 'done' || !o.gateFailed) throw new Error('a call with no gate decision ran ungated: it counts, and gateFailed is set: ' + JSON.stringify([st.a5, o.gateFailed]));
+  if (o.gateDenied.length !== 1 || o.gateDenied[0].tool !== P) throw new Error('gateDenied: ' + JSON.stringify(o.gateDenied));
+  const f = A.outcomes([{ id: 'a1', kind: 'refund', tool: T, to: '#1', amount: 12.5 }], [{ id: 'c', name: T, input: { order: '#1', amount: 13 }, ok: true }], [{ id: 'c', allow: true }]).actions[0].outcome;
+  if (f.flag !== 'amount 12.50 not found in the call') throw new Error('amount flag: ' + JSON.stringify(f));
+  return 'done · failed with its error · unknown with no result · not done when blocked · two refunds told apart by amount · flags · gateFailed';
+});
+await step('actions: approve runs only what is still connected, behind the gate, and keeps the calls of a run that stopped', async () => { // AC-8, AC-9, AC-13
+  const A = await import('./actions.mjs'); const os = await import('node:os');
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-approve-')), 'g');
+  const task = { draft: 'the draft', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#1', amount: 5, currency: 'USD', summary: 's' }, { id: 'a2', kind: 'reply', tool: 'mcp__stripe__x', to: 'a@b.co', summary: 's' }] };
+  let seen = null;
+  const run = (fail) => async (system, user, opts) => { // a stand-in for askX: the gate decides each call exactly as Claude Code would run it
+    seen = { system, user, opts }; const calls = [];
+    for (const id of ['k1', 'k2']) { const g = await gateCall(dir, { tool_name: 'mcp__shopify__refund_create', tool_input: { order: '#1', amount: 5 }, tool_use_id: id }); calls.push({ id, name: 'mcp__shopify__refund_create', input: { order: '#1', amount: 5 }, ok: g.code === 0 ? (fail ? null : true) : false, error: g.code ? g.err : null }); }
+    if (fail) { const e = new Error('Claude took longer than 300 s'); e.calls = calls; throw e; }
+    return { text: 'a1 refunded', calls, tools: ['mcp__shopify__refund_create'] };
+  };
+  const r = await A.approve(task, { agent: { name: 'INVO', role: 'Invoices' }, deptName: 'Accounting', business: 'Test Co', servers: SERVERS, dir, ask: run(false), model: 'sonnet' });
+  if (JSON.stringify(seen.opts.only) !== '["mcp__shopify__refund_create"]' || seen.opts.settings !== path.join(dir, 'settings.json')) throw new Error('only / settings: ' + JSON.stringify(seen.opts));
+  if (/a@b\.co/.test(seen.user) || !/APPROVED/.test(seen.system) || !/the draft/.test(seen.system)) throw new Error('the approve prompt carries more than the runnable actions');
+  const [a1, a2] = r.actions; if (a1.outcome.status !== 'done' || a2.outcome.status !== 'not_done' || a2.outcome.error !== 'connector not connected') throw new Error(JSON.stringify(r.actions));
+  if (r.gateDenied.length !== 1 || r.gateFailed || fs.existsSync(dir)) throw new Error('the second refund call was not blocked, or the gate folder is left: ' + JSON.stringify(r.gateDenied));
+  const t2 = await A.approve({ ...task, actions: [task.actions[0]] }, { agent: { name: 'INVO' }, servers: SERVERS, dir, ask: run(true) });
+  if (t2.actions[0].outcome.status !== 'unknown' || !/longer than/.test(t2.error)) throw new Error('a timed out run must keep its calls: ' + JSON.stringify(t2));
+  let called = false; const t3 = await A.approve(task, { agent: { name: 'INVO' }, servers: SERVERS, sdk: true, dir, ask: async () => { called = true; } });
+  if (called || t3.ran || !t3.actions.every(a => a.outcome.status === 'not_done' && a.outcome.error === 'the API key backend has no connectors')) throw new Error('API key backend: ' + JSON.stringify(t3));
+  fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+  return 'only the refund tool, gated · second call blocked · stripe gone → not done · timeout keeps the call as unknown · API key backend starts no run';
+});
+await step('actions: draft lines per role, the rework list, the note section and the restart close out', async () => { // AC-10, AC-11, AC-14, AC-15
+  const A = await import('./actions.mjs');
+  if (/```actions/.test(A.draftLine('piece')) || !/Do not write an actions block/.test(A.draftLine('piece'))) throw new Error('a team piece must not write a block');
+  if (!/```actions/.test(A.draftLine('single')) || !/ToolSearch/.test(A.draftLine('single')) || !/cannot look anything up/.test(A.draftLine('single')) || !/team/.test(A.draftLine('lead'))) throw new Error('draft line');
+  const ex = A.parse(A.draftLine('single')); if (ex.why || A.validate(ex.list, { servers: [{ id: 'claude_ai_Gmail', tools: [] }, { id: 'shopify', tools: [] }] }).why) throw new Error('the worked example in the draft line does not validate: ' + (ex.why || A.validate(ex.list, {}).why));
+  const rw = A.reworkLine([{ id: 'a1', kind: 'refund', tool: 'T', to: '#1', amount: 5, outcome: { status: 'done' } }]); if (!/"kind":"refund"/.test(rw) || /outcome|"id"/.test(rw) || A.reworkLine([])) throw new Error('rework line: ' + rw);
+  const acts = [{ id: 'a1', kind: 'refund', to: '#1001', amount: 12.5, currency: 'USD', outcome: { status: 'done' } }, { id: 'a2', kind: 'reply', to: 'a@b.co', outcome: { status: 'failed', error: 'bounced' } }, { id: 'a3', kind: 'order_update', to: '#7', outcome: { status: 'not_done' } }, { id: 'a4', kind: 'post', to: '#ch', outcome: { status: 'unknown', flag: 'recipient not found in the call' } }];
+  const sec = A.noteSection(acts, { gateFailed: true });
+  if (!sec.startsWith('## Actions\n- a1 · refund · to #1001 · 12.50 USD · done\n- a2 · reply · to a@b.co · failed · bounced\n- a3 · order update · to #7 · not done\n- a4 · post · to #ch · unknown · flag: recipient not found in the call\n') || !/gate did not run/.test(sec)) throw new Error('section:\n' + sec);
+  if (A.noteLine(acts) !== 'actions: 4 · done 1 · failed 1 · not done 1 · unknown 1') throw new Error('note line: ' + A.noteLine(acts));
+  const t = A.closeOut({ id: 'x', state: 'doing', approving: true, draft: 'D', actions: [{ id: 'a1', kind: 'refund', to: '#1', outcome: { status: 'done' } }, { id: 'a2', kind: 'reply', to: 'b' }] });
+  if (t.state !== 'done' || t.approving || !t.doneAt || t.actions[0].outcome.status !== 'done' || t.actions[1].outcome.status !== 'unknown' || t.actions[1].outcome.error !== 'the office stopped while sending, check before resending' || !/^D\n\n---\nAFTER YOUR OK\n/.test(t.result)) throw new Error('close out: ' + JSON.stringify(t));
+  return 'pieces write no block · the example validates · rework carries the list without outcomes · note section and front matter line · a stopped approve closes out as unknown';
+});
+
 /* ---------- 2. offline smoke (Playwright) ---------- */
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { try { ({ chromium } = await import('playwright-core')); } catch {} }
@@ -516,6 +647,27 @@ else {
       await page.waitForFunction(() => document.querySelectorAll('.tp-row.waiting').length > 0, null, { timeout: 4000 }).catch(() => {}); // the panel renders on the next frame; headless WebGL frames can be slow
       const w = await page.evaluate(() => document.querySelectorAll('.tp-row.waiting').length); if (!w) throw new Error('no waiting row (ada: ' + (await page.evaluate(() => window.CC.R.ada.state)) + ')');
     });
+    await step('smoke: a waiting draft lists its actions on the card and the row; an unreadable list locks APPROVE (demo)', async () => { // STORE spec 0001: AC-4, AC-6
+      await page.evaluate(n => { const base = { dept: 'fin', text: 'x', state: 'waiting', addedAt: n, waitingAt: n, by: 'routine', needsOk: true }; // what /api/tasks hands a live page
+        window.CC.tasks.reconcile({ ...base, id: 'chk-ok', agent: 'apay', title: 'Pay the two vendor bills', draft: 'Two bills.', result: 'Two bills.', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'payment', tool: 'mcp__xero__pay', to: 'Acme', amount: 30, currency: 'USD', summary: 'Pay the Acme bill' }, { id: 'a2', kind: 'payment', tool: 'mcp__xero__pay', to: 'Bolt', amount: 12, currency: 'USD', summary: 'Pay the Bolt bill' }] });
+        window.CC.tasks.reconcile({ ...base, id: 'chk-bad', agent: 'invo', title: 'Refund the double charge', draft: 'A refund.', result: 'A refund.', actionsRead: 'unreadable', actionsWhy: 'action 1: refund has no amount', actions: [] }); }, Date.now());
+      await page.click('.tp-chip[data-f="waiting"]');
+      const metas = () => [...document.querySelectorAll('.tp-row.waiting .tp-m')].map(e => e.textContent);
+      await until(() => { const m = [...document.querySelectorAll('.tp-row.waiting .tp-m')].map(e => e.textContent); return m.some(x => /2 actions · 42\.00 USD/.test(x)) && m.some(x => /actions unreadable/.test(x)); });
+      const rows = await page.evaluate(metas); if (!rows.some(x => /2 actions · 42\.00 USD/.test(x)) || !rows.some(x => /actions unreadable/.test(x))) throw new Error('rows: ' + rows.join(' | '));
+      const cardOf = id => page.evaluate(() => { const c = [...document.querySelectorAll('#mMsgs .m-appr')].pop(); return c ? { disabled: c.querySelector('.a-yes')?.disabled, text: c.textContent.replace(/\s+/g, ' ') } : null; });
+      await page.evaluate(() => window.CC.openAgent('invo'));
+      await until(() => /refund has no amount/.test([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || ''));
+      const bad = await cardOf(); if (!bad || bad.disabled !== true || !/Actions unreadable: action 1: refund has no amount/.test(bad.text)) throw new Error('locked card: ' + JSON.stringify(bad));
+      await page.evaluate(() => [...document.querySelectorAll('#mMsgs .m-appr .a-yes')].pop().click()); // a disabled button: nothing happens
+      if (await page.evaluate(() => window.CC.R.invo.state) !== 'stuck') throw new Error('a locked APPROVE went through');
+      await page.evaluate(() => window.CC.openAgent('apay'));
+      await until(() => /Pay the Bolt bill/.test([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || ''));
+      const good = await cardOf(); if (!good || good.disabled !== false || !/OUTBOUND ACTIONS · 2 ACTIONS · 42\.00 USD/.test(good.text) || !/payment · to Acme ?30\.00 USD/.test(good.text) || !/Pay the Bolt bill · mcp__xero__pay/.test(good.text)) throw new Error('card: ' + JSON.stringify(good));
+      await page.keyboard.press('Escape'); await until(() => !document.getElementById('rail').classList.contains('open'));
+      await page.click('.tp-chip[data-f="all"]');
+      return `row "${rows.find(x => /42\.00/.test(x)).split(' · ').slice(-2).join(' · ')}" · card lists both payments · unreadable card locks APPROVE`;
+    });
     await step('smoke: no errors after the run', async () => { if (errors.length) throw new Error(errors[0]); });
   } catch (e) { bad('smoke: browser', e.message); }
   finally { if (browser) await browser.close(); }
@@ -526,6 +678,14 @@ else {
   // STORE (24 Oct 2026): ask the OS for a free port; a random 46xx could land on one another program holds (EADDRINUSE)
   const port = await new Promise((resolve, reject) => { const s = net.createServer().once('error', reject).listen(0, () => { const p = s.address().port; s.close(() => resolve(p)); }); });
   const env = { ...process.env, PORT: String(port) };
+  // STORE spec 0001 (AC-15): an approve the office was stopped in the middle of, and a gate folder it left — planted before the server starts
+  const TASKS = path.join(ROOT, 'data', 'tasks.json'), readTasks = () => { try { return JSON.parse(fs.readFileSync(TASKS, 'utf8')); } catch { return []; } };
+  const writeTasks = l => { fs.mkdirSync(path.dirname(TASKS), { recursive: true }); fs.writeFileSync(TASKS, JSON.stringify(l, null, 2)); };
+  const ACT = { id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#1', amount: 5, currency: 'USD', summary: 'Refund the shipping on #1' };
+  const chkTask = (id, extra) => ({ id, dept: 'fin', agent: 'invo', title: 'Check ' + id, text: 'x', plan: [], state: 'waiting', addedAt: Date.now(), by: 'routine', needsOk: true, draft: 'The draft.', result: 'The draft.', waitingAt: Date.now(), ...extra });
+  const STOPPED = 'chk-stopped-' + Date.now().toString(36), LEFTOVER = path.join(ROOT, 'data', 'gates', 'chk-leftover');
+  writeTasks([...readTasks(), chkTask(STOPPED, { state: 'doing', approving: true, actions: [ACT], actionsRead: 'ok' })]); fs.mkdirSync(LEFTOVER, { recursive: true });
+  const chkNotes = [];
   const srv = spawn('node', ['serve.mjs'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = ''; srv.stdout.on('data', d => { log += d; }); srv.stderr.on('data', d => { log += d; });
   const base = `http://localhost:${port}`;
@@ -601,6 +761,29 @@ else {
       if (b.status !== 400) throw new Error('bad time accepted');
       return j.error;
     });
+    await step('server: an approve the office stopped in the middle of is closed out at startup, its gate folder gone', async () => { // AC-15
+      const t = readTasks().find(x => x.id === STOPPED); if (t?.note) chkNotes.push(t.note);
+      if (!t || t.state !== 'done' || t.approving || t.actions[0].outcome?.status !== 'unknown' || !/check before resending/.test(t.actions[0].outcome.error)) throw new Error('not closed out: ' + JSON.stringify(t).slice(0, 200));
+      if (fs.existsSync(LEFTOVER)) throw new Error('data/gates was not emptied');
+      const note = fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'); if (!/^actions: 1 · done 0 · failed 0 · not done 0 · unknown 1$/m.test(note) || !/## Actions\n- a1 · refund · to #1 · 5.00 USD · unknown/.test(note)) throw new Error('note: ' + note.slice(0, 300));
+      return `${t.id} done · a1 unknown · note ${t.note}.md`;
+    });
+    await step('server: an unreadable or old draft cannot be approved; an empty list is done with no Claude run', async () => { // AC-4, AC-7, AC-12
+      const s = Date.now().toString(36), ids = { old: 'chk-old-' + s, bad: 'chk-bad-' + s, empty: 'chk-empty-' + s };
+      writeTasks([...readTasks(), chkTask(ids.old), chkTask(ids.bad, { actions: [], actionsRead: 'unreadable', actionsWhy: 'action 2: refund has no amount' }), chkTask(ids.empty, { actions: [], actionsRead: 'ok' })]);
+      try {
+        const approve = async id => { const r = await fetch(`${base}/api/tasks/${id}/approve`, { method: 'POST' }); return { status: r.status, j: await r.json() }; };
+        const o = await approve(ids.old); if (o.status !== 400 || !/drafted before action lists, send it back to redraft it/.test(o.j.error)) throw new Error('old draft: ' + JSON.stringify(o));
+        const b = await approve(ids.bad); if (b.status !== 400 || b.j.error !== 'the actions in this draft could not be read: action 2: refund has no amount. Send it back with REJECT.') throw new Error('unreadable: ' + JSON.stringify(b));
+        if (readTasks().filter(x => x.id === ids.old || x.id === ids.bad).some(x => x.state !== 'waiting')) throw new Error('a refused approve moved the task');
+        const e = await approve(ids.empty); if (e.status !== 200 || e.j.state !== 'done') throw new Error('empty list: ' + JSON.stringify(e));
+        const t = readTasks().find(x => x.id === ids.empty); if (t?.note) chkNotes.push(t.note);
+        if (t.state !== 'done' || !t.approved || !t.approvedAt || !t.doneAt || !/AFTER YOUR OK\nNothing went out, this draft had no outbound actions\.$/.test(t.result)) throw new Error('empty approve: ' + JSON.stringify(t).slice(0, 200));
+        if (!/^actions: 0 · /m.test(fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'))) throw new Error('the note has no actions line');
+        const again = await approve(ids.empty); if (again.status !== 400 || !/not waiting/.test(again.j.error)) throw new Error('a second approve was not refused: ' + JSON.stringify(again));
+        return `old → "${o.j.error.slice(0, 50)}…" · unreadable → 400 · empty → done, no run · a second approve refused`;
+      } finally { for (const id of Object.values(ids)) await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
+    });
     await step('server: rejects an empty task', async () => { const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"dept":"sales","text":""}' }); if (r.status !== 400) throw new Error('status ' + r.status); });
     if (LIVE) {
       await step('live: Claude routes a task', async () => {
@@ -673,6 +856,42 @@ else {
         const r = await fetch(base + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: 'lexi', text: 'what is our proposal win rate?' }) });
         if (!r.ok) throw new Error((await r.json()).error); const j = await r.json(); if (!j.reply) throw new Error('empty reply'); return j.reply.slice(0, 80).replace(/\n/g, ' ');
       });
+      // STORE spec 0001: after the chat turn above, so the office has seen a run's init (claude mcp list does not show the claude.ai connectors). The call gate in a real `claude -p` run. CHECK_GATE_TOOL = a READ-ONLY tool of a connected server (it is called for real)
+      const GATE_TOOL = process.env.CHECK_GATE_TOOL || 'mcp__claude_ai_Google_Calendar__list_calendars';
+      const gateServer = async () => { const m = await (await fetch(base + '/api/mcp')).json(); const sid = /^mcp__(.+?)__/.exec(GATE_TOOL)?.[1]; return m.servers.some(s => s.id === sid && s.status === 'connected' && s.allowed) ? sid : null; };
+      await step('live: the call gate holds in a real claude -p run — one call allowed, the second blocked, a decision line each', async () => {
+        if (!await gateServer()) return `skipped: ${GATE_TOOL} is not on a connected server here (set CHECK_GATE_TOOL to a read-only tool)`;
+        const A = await import('./actions.mjs'); const os = await import('node:os');
+        const dir = path.join(ROOT, 'data', 'gates', 'chk-live-' + Date.now().toString(36)), cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-gate-live-'));
+        const settings = A.prepareGate(dir, [{ tool: GATE_TOOL }]); const env2 = { ...process.env }; delete env2.CLAUDECODE;
+        try {
+          const args = ['-p', `Call the tool ${GATE_TOOL} two times, one after the other, not in parallel. Then say in one line whether the second call worked.`, '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt', 'You are a test agent. Do exactly what is asked.',
+            '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,Agent,NotebookEdit,Task,WebFetch,WebSearch', '--allowedTools', GATE_TOOL, '--no-chrome', '--model', 'sonnet', '--settings', settings]; // the shape askX gives an approve run
+          const out = await new Promise((resolve, reject) => { const p = spawn('claude', args, { cwd, env: env2, stdio: ['ignore', 'pipe', 'pipe'] }); let s = ''; p.stdout.on('data', d => { s += d; }); const tm = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('claude took longer than 240 s')); }, 240000); p.on('close', () => { clearTimeout(tm); resolve(s); }); p.on('error', reject); });
+          const ev = out.split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+          const uses = ev.filter(j => j.type === 'assistant').flatMap(j => j.message.content).filter(b => b.type === 'tool_use' && b.name === GATE_TOOL);
+          const res = Object.fromEntries(ev.filter(j => j.type === 'user' && Array.isArray(j.message?.content)).flatMap(j => j.message.content).filter(b => b.type === 'tool_result').map(b => [b.tool_use_id, !!b.is_error]));
+          const dec = Object.fromEntries(A.readGate(dir).decisions.map(d => [d.id, d.allow]));
+          if (uses.length < 2) throw new Error(`the agent called ${GATE_TOOL} ${uses.length} time(s), the check needs two`);
+          if (uses.some(u => !(u.id in dec))) throw new Error('a call has no decision line: the hook did not run (gateFailed in production)');
+          if (dec[uses[0].id] !== true || res[uses[0].id] !== false) throw new Error('the first call was not allowed through');
+          if (uses.slice(1).some(u => dec[u.id] !== false || res[u.id] !== true)) throw new Error('a second call went through the gate');
+          return `${uses.length} calls · first allowed · ${uses.length - 1} blocked by the gate · ${Object.keys(dec).length} decision lines`;
+        } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(cwd, { recursive: true, force: true }); }
+      });
+      await step('live: approving a one action draft runs it through the gate and records the outcome', async () => {
+        if (!await gateServer()) return `skipped: ${GATE_TOOL} is not on a connected server here`;
+        const id = 'chk-live-approve-' + Date.now().toString(36);
+        writeTasks([...readTasks(), chkTask(id, { actionsRead: 'ok', actions: [{ id: 'a1', kind: 'other', tool: GATE_TOOL, to: 'primary', summary: 'List the calendars (office check)', amount: null, percent: null, currency: null }] })]);
+        try {
+          const r = await fetch(`${base}/api/tasks/${id}/approve`, { method: 'POST' }); if (r.status !== 200) throw new Error('approve: ' + r.status + ' ' + JSON.stringify(await r.json()));
+          let t = null; for (let i = 0; i < 80 && !(t && t.state === 'done'); i++) { await new Promise(r => setTimeout(r, 3000)); t = readTasks().find(x => x.id === id); }
+          if (!t || t.state !== 'done') throw new Error('the approve did not finish in time'); if (t.note) chkNotes.push(t.note);
+          const o = t.actions[0].outcome; if (o?.status !== 'done' || t.gateFailed || t.error) throw new Error('outcome: ' + JSON.stringify({ o, gateFailed: t.gateFailed, error: t.error, result: t.result.slice(-200) }));
+          if (!/## Actions\n- a1 · other · to primary · done/.test(fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'))) throw new Error('the note has no Actions section');
+          return `a1 done${o.flag ? ' (flag: ' + o.flag + ')' : ''} · ${t.gateDenied?.length || 0} blocked · ${t.note}.md`;
+        } finally { await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
+      });
       if (chromium) await step('live: the whole flow in a browser', async () => {
         let browser; try { browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); } catch { browser = await chromium.launch({ channel: 'chrome' }); }
         try {
@@ -703,6 +922,9 @@ else {
     } else ok('live: skipped', 'set CHECK_LIVE=1 to route one task and one chat through Claude');
   }
   srv.kill();
+  // STORE spec 0001: take out what the check planted (the server may already be gone, so straight from the file)
+  writeTasks(readTasks().filter(t => !String(t.id).startsWith('chk-'))); fs.rmSync(LEFTOVER, { recursive: true, force: true });
+  for (const n of chkNotes) fs.rmSync(path.join(cfg.brainPath, 'Agents Office', n + '.md'), { force: true });
 }
 
 /* ---------- summary ---------- */

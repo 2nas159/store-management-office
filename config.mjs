@@ -2,6 +2,7 @@
 // office.config.json is the shipped default; office.config.local.json (gitignored) overrides it;
 // environment variables override both: AO_NAME, AO_BRAIN, PORT, AO_MODEL.
 // V3.1 keys: mcp { allow, deny, departments } · tools { web } · timeout (seconds per agent run) — see mcp.mjs.
+// STORE (24 Oct 2026) key: currency (ISO code for an action with an amount and no currency, default USD; spec 0001) — problems lands in c.problems.
 // V3.2 (16 Sep) keys: tools { browser } (Claude in Chrome for the agents, default on) · teams { enabled, max } (Agent Teams, default on, up to 4 desks) — see teams.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +26,8 @@ export function loadConfig() {
   if (process.env.PORT) c.port = +process.env.PORT;
   if (process.env.AO_MODEL) c.model = process.env.AO_MODEL;
   c.port = +c.port || 4520;
+  c.problems = [];
+  { const cur = String(c.currency ?? 'USD').trim().toUpperCase(); if (/^[A-Z]{3}$/.test(cur)) c.currency = cur; else { c.problems.push(`currency must be a three letter code like USD (got "${c.currency}"), using USD`); c.currency = 'USD'; } } // STORE spec 0001
   c.brainPath = path.resolve(ROOT, c.brain);
   return c;
 }
