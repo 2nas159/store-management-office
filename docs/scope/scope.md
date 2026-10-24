@@ -21,6 +21,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 2 | Routines for every department | Slice 1 | in-progress |
 | 3 | Outbound action list on drafts | Slice 2 | in-progress |
 | 4 | Auto approve rules | Slice 3 | in-progress |
+| 5 | Gate the draft run | Slice 3 | in-progress |
 
 ## Already there
 
@@ -88,13 +89,26 @@ spec [0002](../specs/0002-auto-approve-rules.md) · code in `approvals.mjs`, `ga
 - [ ] Review it: `/check review auto approve rules`
 - [ ] Document it: `/document auto approve rules`
 
+### 5. Gate the draft run · GA
+Drafts and read-only routines still hold every connector and rely on the prompt not to send; the 24 Oct verify saw a draft run save a Gmail draft itself. Now that rules send drafts unattended, those runs get the call gate in a read-only mode, so anything outbound goes only through APPROVE or a rule. From spec 0001's follow-up.
+spec [0003](../specs/0003-gate-the-draft-run.md)
+**Done when:** a draft or read-only routine cannot call a write tool (blocked before the connector, unknown counts as write), Chrome only looks, a blocked call shows on the card, a blocked draft is never sent by rule, and the owner can correct a tool's class in one config line.
+- [x] Design it (spec): `/architect gate the draft run`
+- [ ] Build it: `/develop gate the draft run`
+  - [ ] Classifier: names plus the owner's overrides, the table command, counts in the check (AC-3, AC-4)
+  - [ ] Read mode in the gate for drafts, team pieces and read-only routines (AC-1, AC-2, AC-5, AC-7, AC-8)
+  - [ ] The card, row and note show blocks; rules refuse a blocked or ungated draft (AC-5, AC-6)
+- [ ] Verify it: `/check verify gate the draft run`
+- [ ] Test it: `/test gate the draft run`
+- [ ] Review it: `/check review gate the draft run`
+- [ ] Document it: `/document gate the draft run`
+
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
 - **Store numbers panel**: revenue, average order, conversion, low stock and open tickets from Shopify in the office · needs a decision
 - **Shopify event triggers**: a new order, low stock, a refund request or a bad review starts a task · needs a decision
 - **Brain health routine**: the vault linter runs weekly and reports in the office; easy once feature 2 ships
 - **More seats or a seventh department**: beyond the fixed 35 desks · needs a decision
-- **Gate the draft run too**: draft runs still hold every connector and rely on the prompt not to send; needs a read only classification of connector tools · needs a decision · from spec 0001
 - **Approvable browser actions**: how an approved Chrome action is bounded (call budget, allowed site, final submit check) · needs a decision · from spec 0001
 - **Per action approval and retry**: untick single actions, and approve the not done remainder again, on the 0001 schema · from spec 0001
 
