@@ -190,8 +190,8 @@ into the skill.
 ## Routines: the office runs on its own clock
 
 A routine is a task the office does by itself, on a timetable: every weekday at 08:00, every
-Monday, every hour. In this release routines are for **Emails, Accounting and Sales**; the
-other departments get them later, and say so if you try.
+Monday, every hour. Every department can have routines: Emails, Sales, Marketing, Operations,
+Accounting and Delivery.
 
 Three ways to set one, all the same underneath:
 
@@ -242,7 +242,7 @@ not, and it lands in the panel like any task (waiting for your OK if it would se
 run missed while the office was off happens once when it comes back, marked LATE. Switch on
 **REPEAT**, pick the cadence, and it becomes a routine that starts on that date — `every weekday
 · 08:00 · from 5 Oct` — and shows on the grid from that day forward and never before it
-(Emails, Accounting and Sales, as routines are). Scheduled tasks also show under the SCHEDULED
+(any department). Scheduled tasks also show under the SCHEDULED
 chip in the panel and in the SCHEDULED column on the board, with CANCEL.
 
 ## Agent Teams: the lead splits it across the desks

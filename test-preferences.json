@@ -1,0 +1,11 @@
+{
+  "tool": "check.mjs",
+  "gate": null,
+  "additionalTools": [],
+  "e2eTool": "playwright-core (browser smoke inside check.mjs)",
+  "testDir": ".",
+  "filePattern": "check.mjs (add step('area: what it proves', ...) lines)",
+  "packageManager": "npm",
+  "runCommand": "npm run check",
+  "note": "AGENTS.md: npm run check is the only test suite; there is no other test runner."
+}

@@ -7,8 +7,8 @@
 // bar · waiting: minutes waiting for AJ's tick · done: the time it finished. Company-wide
 // Kanban still lives on B. DOING / NEXT / DONE rows stay on every pod card.
 // Session-only theatre — nothing persists (AJ's call: gauge interest first).
-// V3.5 (AJ, 9 Sep 2026): ROUTINES — tasks on the office's own clock, Emails / Accounting / Sales
-// only this release. Set one in the bar ("every weekday at 8am, …" or the REPEAT picker), by
+// V3.5 (AJ, 9 Sep 2026): ROUTINES — tasks on the office's own clock, every department since
+// STORE (24 Oct 2026; the list is ROUTINE_DEPTS in data.js). Set one in the bar ("every weekday at 8am, …" or the REPEAT picker), by
 // telling an agent in chat, or in <brain>/Agents Office/routines.json. Live: the server keeps the
 // clock, fires and runs them page or no page; this page polls and shows the card move
 // SCHEDULED → BACKLOG → IN PROGRESS → (WAITING ON APPROVAL) → DONE. A draft that needs the owner's
@@ -20,7 +20,7 @@
 // walks back to the lead (📋), notes they leave each other pop as 💬, and the lead's card finishes
 // with the combined deliverable. Live: the server does it (serve.mjs runTeam, one Claude process per
 // desk); this page reads `task.team` off /api/tasks. Demo: the same theatre on a timer.
-import { DEPTS, AGENTS, DEPT_KEYS } from './data.js';
+import { DEPTS, AGENTS, DEPT_KEYS, ROUTINE_DEPTS, routineRefusal } from './data.js';
 import { P, rnd, ri } from './v1data.js';
 import { applyTasks, PROFILE, titleCase } from './profile.js';
 import { parseWhen, describe, nextRun, fromPicker, untilText } from './when.js';
@@ -140,9 +140,9 @@ export function initTasks(ctx) {
   let seq = 1;
   // V3.5 routines. Live: the server's list (polled). Demo: session-only, fired by this tick.
   const routines = []; let rseq = 1, polling = false, railAgent = null, railExp = false;
-  const RT_DEPTS = ['emails', 'fin', 'sales'];
+  const RT_DEPTS = ROUTINE_DEPTS; // STORE: was ['emails', 'fin', 'sales']
   const RT_NAMES = PROFILE ? Object.fromEntries(Object.entries(PROFILE.pods).map(([k, v]) => [k, titleCase(v)])) : { emails: 'Emails', fin: 'Accounting', sales: 'Sales', marketing: 'Marketing', ops: 'Operations', delivery: 'Delivery' };
-  const rtRefuse = k => `Routines come to ${RT_NAMES[k] || k} in a later release. This release: Emails, Accounting and Sales.`;
+  const rtRefuse = k => routineRefusal(k, RT_NAMES);
   const deptRoutines = k => routines.filter(r => r.dept === k);
   const agentRoutines = id => routines.filter(r => r.agent === id);
   const nextOf = list => list.filter(r => !r.paused && r.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0];
@@ -773,7 +773,7 @@ export function initTasks(ctx) {
       .sort((a, b) => b.changedAt - a.changedAt).slice(0, 60);
     const before = structural ? {} : rects();
     P_.rows.innerHTML = filter === 'sched'
-      ? ((scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' Routines: Emails, Accounting and Sales this release.'}</div>`)
+      ? ((scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
       : (list.map(rowHTMLp).join('') || `<div class="tp-empty">Nothing here right now.</div>`);
     renderNext();
     P_.rows.querySelectorAll('.tp-act button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const row = b.closest('.tp-row'); if (row.dataset.rid) rtAct(row.dataset.rid, b.dataset.act); else if (b.dataset.act === 'cancel') cancelScheduled(tasks.find(t => String(t.id) === row.dataset.id)); else if (b.dataset.act === 'calendar' && calendar) calendar.open(); }));

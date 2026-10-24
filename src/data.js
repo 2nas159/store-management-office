@@ -16,6 +16,14 @@ export const TOKENS = {
 // a new 'ops' pod (OPERATIONS) alongside Legal Review, Compliance and Internal Reporting.
 // V3.1 (5 Sep 2026, AJ): SUPPORT → EMAILS (same mint slot), new DELIVERY pod (sky) on the top axis.
 export const DEPT_KEYS = ['emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'];
+// STORE (24 Oct 2026): the departments that may have routines. The one list: routines.mjs (server)
+// and src/tasks.js (bar, REPEAT, chat, calendar) both read it, so turning one off is one edit here.
+export const ROUTINE_DEPTS = DEPT_KEYS;
+/** "Routines are not on for The Brain. They run for Emails, Sales … and Delivery." names: key → display name. */
+export const routineRefusal = (dept, names) => {
+  const on = ROUTINE_DEPTS.map(k => names[k] || k);
+  return `Routines are not on for ${names[dept] || dept}. They run for ${on.length > 1 ? on.slice(0, -1).join(', ') + ' and ' + on[on.length - 1] : on[0] || 'no department'}.`;
+};
 export const DEPTS = {
   emails:    { name: 'EMAILS',           short: 'EMAILS',  chip: '#5ADEB7', ink: '#1E9070', floor: '#E9F6EF' },
   delivery:  { name: 'DELIVERY',         short: 'DELIVERY', chip: '#8FD3F4', ink: '#2E86AB', floor: '#E6F4FB' },

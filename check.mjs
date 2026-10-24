@@ -5,6 +5,7 @@
 // loop the Beta was built against: change something, run it, fix what is red, repeat.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { loadConfig, ROOT } from './config.mjs';
 
@@ -155,11 +156,13 @@ await step('routines: plain words become a schedule', async () => {
   if (w.untilText(now + 120000, now) !== 'in 2 min' || w.untilText(w.fromPicker('fri', '16:00') && nx, now) !== 'Mon 09:00') throw new Error('countdown text');
   return `${cases.length} phrasings · asks back for a missing time or day · "morning" → 08:00 flagged`;
 });
-await step('routines: outside Emails, Accounting and Sales is refused, bad ones named', async () => {
+await step('routines: every department can have one, bad ones named', async () => { // STORE: was "outside Emails, Accounting and Sales is refused"
   const rt = await import('./routines.mjs'); const { loadRoster } = await import('./roster.mjs'); const agents = loadRoster().agents;
-  const bad = rt.validate({ id: 'x', dept: 'marketing', agent: 'iggy', text: 'post the reel', when: { kind: 'daily', at: '09:00' } }, agents);
-  if (!bad.problems.some(p => /later release/.test(p))) throw new Error('marketing routine not refused: ' + bad.problems);
-  if (!/Emails, Accounting and Sales/.test(rt.refusal('ops'))) throw new Error('refusal sentence');
+  const { DEPT_KEYS } = await import('./src/data.js'); if (JSON.stringify(rt.ALLOWED) !== JSON.stringify(DEPT_KEYS)) throw new Error('routine departments: ' + rt.ALLOWED);
+  for (const k of DEPT_KEYS) { const lead = agents.find(a => a.department === k && a.lead); const ok = rt.validate({ id: 'x-' + k, dept: k, agent: lead.id, text: 'the weekly check', when: { kind: 'daily', at: '09:00' } }, agents); if (ok.problems.length) throw new Error(k + ' routine refused: ' + ok.problems); }
+  const bad = rt.validate({ id: 'x', dept: 'brain', agent: 'iggy', text: 'post the reel', when: { kind: 'daily', at: '09:00' } }, agents);
+  if (!bad.problems.some(p => /not on for The Brain/.test(p))) throw new Error('a routine outside the departments not refused: ' + bad.problems);
+  if (!/They run for Emails, Sales, Marketing, Operations, Accounting and Delivery\./.test(rt.refusal('brain'))) throw new Error('refusal sentence: ' + rt.refusal('brain'));
   const wrong = rt.validate({ dept: 'fin', agent: 'ghost', text: 'x', when: { kind: 'weekly', days: [] } }, agents);
   if (!wrong.problems.some(p => /no agent/.test(p)) || !wrong.problems.some(p => /not complete/.test(p))) throw new Error('unknown agent / incomplete schedule not named: ' + wrong.problems);
   const cross = rt.validate({ dept: 'fin', agent: 'lexi', text: 'x', when: { kind: 'daily', at: '09:00' } }, agents);
@@ -169,7 +172,7 @@ await step('routines: outside Emails, Accounting and Sales is refused, bad ones 
   const dup = rt.validate({ id: 'triage-the-overnight-inbox', dept: 'emails', agent: 'elead', text: 'x', when: { kind: 'daily', at: '09:00' } }, agents, [good.routine]);
   if (!dup.problems.some(p => /share this id/.test(p))) throw new Error('duplicate id not named');
   if (rt.guessNeedsOk('list the overdue invoices') || !rt.guessNeedsOk('send the reminders') || !rt.guessNeedsOk('draft replies to unanswered client emails')) throw new Error('needs-OK guess');
-  return 'marketing refused · unknown agent, wrong department, incomplete schedule, duplicate id all named · needsOk defaults on';
+  return 'all six departments taken · The Brain refused · unknown agent, wrong department, incomplete schedule, duplicate id all named · needsOk defaults on';
 });
 await step('routines: due fires once, a missed run catches up marked LATE, then the clock moves on', async () => {
   const rt = await import('./routines.mjs'); const { loadRoster } = await import('./roster.mjs'); const os = await import('node:os');
@@ -189,6 +192,45 @@ await step('routines: due fires once, a missed run catches up marked LATE, then 
   const m = rt.matchRoutine(list, 'emails', 'the triage one'); if (!m || m.id !== 'a') throw new Error('match by words');
   fs.rmSync(brain, { recursive: true, force: true });
   return 'due once · 2 h late → one catch-up marked LATE · paused never fires · state persists · words match a routine';
+});
+await step('routines: a Marketing, Operations and Delivery routine loads, fires once and moves on like the others', async () => { // STORE (24 Oct 2026): the three departments routines came to
+  const rt = await import('./routines.mjs'); const { loadRoster } = await import('./roster.mjs'); const { ROUTINE_DEPTS, routineRefusal } = await import('./src/data.js'); const os = await import('node:os');
+  const agents = loadRoster().agents; const brain = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-routines-new-')); const data = path.join(brain, 'data');
+  const desk = k => agents.find(a => a.department === k && !a.lead), lead = k => agents.find(a => a.department === k && a.lead);
+  fs.mkdirSync(path.dirname(rt.file(brain)), { recursive: true }); // written the way the owner (or Claude Code) writes routines.json
+  fs.writeFileSync(rt.file(brain), JSON.stringify({ routines: [
+    { id: 'm', dept: 'marketing', agent: desk('marketing').id, title: 'Post the daily reel', text: 'post the daily reel', when: { kind: 'daily', at: '09:00' } },
+    { id: 'o', dept: 'ops', agent: desk('ops').id, title: 'Check the stock levels', text: 'list the low stock items', when: { kind: 'weekdays', at: '07:30' }, needsOk: false },
+    { id: 'd', dept: 'delivery', agent: desk('delivery').id, title: 'Reply to the new reviews', text: 'draft replies to the new reviews', when: { kind: 'weekly', days: [1, 4], at: '10:00' }, team: true },
+  ] }));
+  const l = rt.load(brain, agents); if (l.problems.length || l.routines.length !== 3) throw new Error('load: ' + l.problems);
+  if (l.routines.find(r => r.id === 'd').agent !== lead('delivery').id) throw new Error('a Delivery team routine did not move to the lead');
+  const st = rt.loadState(data); const now = Date.now(); rt.withState(l.routines, st, now);
+  if (!l.routines.every(r => st[r.id].nextAt > now)) throw new Error('nextAt not set: ' + JSON.stringify(st));
+  if (rt.due(l.routines, st, now).length) throw new Error('fired before its time');
+  for (const r of l.routines) st[r.id].nextAt = now - 30 * 1000; // all three reach their minute
+  const fired = rt.due(l.routines, st, now); if (fired.map(x => x.routine.dept).sort().join() !== 'delivery,marketing,ops' || fired.some(x => x.late)) throw new Error('fired: ' + JSON.stringify(fired.map(x => [x.routine.dept, x.late])));
+  for (const x of fired) rt.advance(st, x.routine, now, 't-' + x.routine.id, false);
+  if (rt.due(l.routines, st, now).length || !l.routines.every(r => st[r.id].nextAt > now && st[r.id].runs === 1)) throw new Error('the clock did not move on');
+  const { list } = rt.withState(l.routines, st, now);
+  const ops = rt.listText(list, 'ops', agents); if (!/^Operations routines:/.test(ops) || !/stock levels/.test(ops) || !/read-only/.test(ops)) throw new Error('listText: ' + ops);
+  if (rt.matchRoutine(list, 'marketing', 'the reel one')?.id !== 'm' || rt.matchRoutine(list, 'ops', 'the reel one')) throw new Error('words must match inside the department only');
+  const unnamed = ROUTINE_DEPTS.filter(k => !rt.NAMES[k]); if (unnamed.length) throw new Error('no display name for ' + unnamed); // the refusal and the chat never print a bare key
+  if (routineRefusal('xyz', {}) !== 'Routines are not on for xyz. They run for emails, sales, marketing, ops, fin and delivery.') throw new Error('refusal without names: ' + routineRefusal('xyz', {}));
+  fs.rmSync(brain, { recursive: true, force: true });
+  return 'marketing, ops, delivery load · a Delivery team routine goes to the lead · each fires once, then moves on · list and word match per department';
+});
+await step('routines: saving the file keeps a team routine a team routine', async () => { // STORE (24 Oct 2026): serve.mjs saves on every add, pause, resume, edit and delete
+  const rt = await import('./routines.mjs'); const { loadRoster } = await import('./roster.mjs'); const os = await import('node:os');
+  const agents = loadRoster().agents; const brain = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-routines-save-'));
+  const lead = agents.find(a => a.department === 'delivery' && a.lead);
+  fs.mkdirSync(path.dirname(rt.file(brain)), { recursive: true });
+  fs.writeFileSync(rt.file(brain), JSON.stringify({ routines: [{ id: 'd', dept: 'delivery', agent: lead.id, title: 'Reply to the new reviews', text: 'draft replies to the new reviews', when: { kind: 'weekly', days: [1], at: '10:00' }, team: true }] }));
+  const before = rt.load(brain, agents).routines; if (before[0]?.team !== true) throw new Error('team not loaded');
+  before[0].paused = true; rt.save(brain, before); // what "pause the reviews one" does
+  const after = rt.load(brain, agents).routines; fs.rmSync(brain, { recursive: true, force: true });
+  if (after[0]?.team !== true) throw new Error('routines.save() dropped "team": true, so pausing or adding any routine turns a team routine into a one desk routine (routines.mjs save)');
+  return 'team: true survives a pause';
 });
 
 /* ---------- 1d. models + the usage gauge (V3.6) ---------- */
@@ -311,6 +353,9 @@ else {
     catch { browser = await chromium.launch({ channel: 'chrome', args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); }
     const page = await browser.newPage({ viewport: { width: 1512, height: 900 } });
     const errors = []; page.on('pageerror', e => errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') errors.push(m.text().slice(0, 120)); });
+    // STORE (24 Oct 2026): wait for the state a step reads, not a fixed time. The feed, the rail and the top strip
+    // update on the render tick, and headless WebGL frames are slow and uneven; the step's own check names what is missing.
+    const until = (fn, arg) => page.waitForFunction(fn, arg, { timeout: 8000, polling: 50 }).catch(() => {});
     await page.goto('file://' + path.join(ROOT, 'dist', 'command-centre-v2.html') + '?s=check'); await page.waitForTimeout(3000);
     await step('smoke: loads without page errors', async () => { if (errors.length) throw new Error(errors[0]); });
     await step('smoke: 35 agents at their desks', async () => { const n = await page.evaluate(() => Object.keys(window.CC.R).length); if (n !== 35) throw new Error('agents: ' + n); return n + ' agents'; });
@@ -325,19 +370,21 @@ else {
     });
     await step('smoke: command bar adds a task in demo mode', async () => {
       await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="marketing"]');
-      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter'); await page.waitForTimeout(600);
-      const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added/.test(hint)) throw new Error('hint: ' + hint);
+      await page.fill('.tp-in', 'cut a 15 second teaser from the demo reel'); await page.keyboard.press('Enter');
+      const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added/.test(hint)) throw new Error('hint: ' + hint); // set inside the Enter handler, read before its 2.6 s timer
+      await until(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent)));
       const row = await page.evaluate(() => [...document.querySelectorAll('.tp-row .tp-t')].some(e => /teaser/i.test(e.textContent))); if (!row) throw new Error('row not in the feed');
       return hint.trim().slice(0, 60);
     });
     await step('smoke: TEAM in the bar → the lead + piece cards on the desks (demo)', async () => { // V3.2 (16 Sep)
-      await page.waitForTimeout(2800); // the previous step's hint timer (2.6 s) would wipe our "Added" line mid-read
+      await until(() => !/Added/.test(document.querySelector('.tp-hint').textContent)); // STORE: the previous step's hint timer has fired, so it cannot wipe our "Added" line mid-read
       await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="sales"]');
       await page.fill('.tp-in', 'as a team, plan the spring outreach push');
       await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
       const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Team · SALES LEAD/.test(pre)) throw new Error('hint before Add: ' + pre);
-      await page.keyboard.press('Enter'); await page.waitForTimeout(700);
+      await page.keyboard.press('Enter');
       const hint = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Added — SALES LEAD has it with/.test(hint)) throw new Error('hint: ' + hint);
+      await until(() => document.querySelectorAll('.tp-row.piece').length >= 2 && [...document.querySelectorAll('.tp-row .tp-t')].some(e => /⚑ As a team, plan the spring/.test(e.textContent)));
       const n = await page.evaluate(() => ({ lead: [...document.querySelectorAll('.tp-row .tp-t')].filter(e => /⚑ As a team, plan the spring/.test(e.textContent)).length, pieces: document.querySelectorAll('.tp-row.piece').length, chip: [...document.querySelectorAll('.tp-team-chip')].map(e => e.textContent) }));
       if (n.lead !== 1 || n.pieces < 2 || !n.chip.some(c => /^TEAM [34]$/.test(c)) || !n.chip.includes('PIECE')) throw new Error(JSON.stringify(n));
       await page.fill('.tp-in', 'draft the renewal email'); await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
@@ -366,9 +413,9 @@ else {
       await page.evaluate(() => window.CC.tasks.rtAct(window.CC.routines()[0].id, 'run')); await page.waitForTimeout(500);
       const fired = await page.evaluate(() => window.CC.tasks.tasks.some(t => t.routine && /triage the inbox/i.test(t.title))); if (!fired) throw new Error('RUN NOW did not make a task');
       await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="marketing"]');
-      await page.fill('.tp-in', 'every day at 9am post the reel'); await page.keyboard.press('Enter'); await page.waitForTimeout(400);
-      const no = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/later release/.test(no)) throw new Error('marketing not refused: ' + no);
-      const still = await page.evaluate(() => window.CC.routines().length); if (still !== 1) throw new Error('a refused routine was added');
+      await page.fill('.tp-in', 'every day at 9am post the reel'); await page.keyboard.press('Enter'); // STORE: marketing has routines now
+      await page.waitForFunction(() => window.CC.routines().length === 2, null, { timeout: 5000 }).catch(() => {});
+      const mk = await page.evaluate(() => window.CC.routines().filter(r => r.dept === 'marketing').map(r => r.title + ' · ' + r.desc)); if (mk.length !== 1 || !/post the reel/i.test(mk[0]) || !/09:00/.test(mk[0])) throw new Error('marketing routine not added: ' + JSON.stringify(mk) + ' · ' + await page.evaluate(() => document.querySelector('.tp-hint').textContent));
       const opts = await page.evaluate(() => [...document.querySelectorAll('.tp-model option')].map(o => o.value).join(',') + '|' + document.querySelector('.tp-model').value); if (opts !== 'sonnet,opus,fable|sonnet') throw new Error('model menu: ' + opts);
       const eff = await page.evaluate(() => [...document.querySelectorAll('.tp-effort option')].map(o => o.value).join(',') + '|' + document.querySelector('.tp-effort').value); if (eff !== ',low,medium,high,xhigh,max|') throw new Error('effort menu: ' + eff);
       // V3.7: the box grows with the text, and the big editor mirrors it both ways
@@ -382,7 +429,7 @@ else {
       const bigOff = await page.evaluate(() => !document.getElementById('tpBig').classList.contains('on')); if (!bigOff) throw new Error('Esc did not close the big editor');
       await page.fill('.tp-in', ''); await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true }))); await page.evaluate(() => document.querySelector('.tp-in').blur()); await page.click('.tp-chip[data-f="all"]'); // hand the keys back, feed back to All
       const rest = await page.evaluate(() => document.querySelector('.tp-in').offsetHeight); if (rest > 34) throw new Error('box did not shrink back: ' + rest + 'px');
-      return 'hint says the schedule · SCHEDULED row + next-up strip + board column · RUN NOW fires · marketing refused · box grows + big editor mirrors';
+      return 'hint says the schedule · SCHEDULED row + next-up strip + board column · RUN NOW fires · marketing routine added · box grows + big editor mirrors';
     });
     await step('smoke: the CALENDAR button and P open the calendar — routines on their days, a task scheduled for a date, a routine from a date (demo)', async () => { // V3.2.1
       await page.click('#topCal'); await page.waitForTimeout(500); // the top-bar button opens it…
@@ -408,20 +455,47 @@ else {
       await page.click('.cv-go'); await page.waitForTimeout(500);
       const r = await page.evaluate(() => window.CC.tasks.routines.find(x => /weekly client update/i.test(x.title))); if (!r || r.when.start !== target) throw new Error('routine start: ' + JSON.stringify(r && r.when));
       const before = await page.$$eval('.cv-ev.routine', (els, t) => els.filter(x => x.title.startsWith('Send the weekly client update') && x.closest('.cv-day').dataset.day < t).length, target); if (before) throw new Error('the routine shows before its start date');
-      // marketing is refused for routines, with the sentence
+      // STORE: marketing gets the routine hint and the button, like every department, and ADD sets the routine from that date
       await page.hover(`.cv-day[data-day="${target}"]`); await page.click(`.cv-day[data-day="${target}"] .cv-add`); await page.waitForTimeout(200);
-      await page.selectOption('.cv-dept', 'marketing'); await page.click('.cv-rep'); await page.waitForTimeout(150);
-      const refused = await page.$eval('.cv-hint', e => e.textContent); const dis = await page.$eval('.cv-go', e => e.disabled); if (!/later release/.test(refused) || !dis) throw new Error('marketing routine not refused: ' + refused);
+      await page.selectOption('.cv-dept', 'marketing'); await page.fill('.cv-text', 'Post the new arrivals carousel'); await page.click('.cv-rep'); await page.waitForTimeout(150);
+      const mhint = await page.$eval('.cv-hint', e => e.textContent); const dis = await page.$eval('.cv-go', e => e.disabled); if (!/Routine ·/.test(mhint) || dis) throw new Error('marketing routine not offered: ' + mhint);
+      await page.click('.cv-go');
+      await page.waitForFunction(() => window.CC.tasks.routines.some(x => /new arrivals carousel/i.test(x.title)), null, { timeout: 5000 }).catch(() => {});
+      const mr = await page.evaluate(() => window.CC.tasks.routines.find(x => /new arrivals carousel/i.test(x.title))); if (!mr || mr.dept !== 'marketing' || mr.when.start !== target) throw new Error('marketing routine from the calendar: ' + JSON.stringify(mr && { dept: mr.dept, when: mr.when }));
+      if (await page.$eval('#cvPop', e => !e.hidden)) { await page.keyboard.press('Escape'); await page.waitForTimeout(150); }
+      await page.hover(`.cv-day[data-day="${target}"]`); await page.click(`.cv-day[data-day="${target}"] .cv-add`); await page.waitForTimeout(200);
       await page.keyboard.press('Escape'); await page.waitForTimeout(150); if (!await page.$eval('#cvPop', e => e.hidden)) throw new Error('Esc did not close the popover');
       await page.click('.cv-seg button[data-v="week"]'); await page.waitForTimeout(300); const wk = await page.$$eval('.cv-day', e => e.length); if (wk !== 7) throw new Error('week cells: ' + wk);
       await page.keyboard.press('Escape'); await page.waitForTimeout(300); if (await page.$eval('#calOv', e => e.classList.contains('on'))) throw new Error('Esc did not close the calendar');
-      return `${cells} cells · ${rt} routine runs on the grid · rail ${rail} · task scheduled for ${target} · routine starts ${target} (none before) · marketing refused · week view 7`;
+      return `${cells} cells · ${rt} routine runs on the grid · rail ${rail} · task scheduled for ${target} · routine starts ${target} (none before) · marketing routine set from ${target} · week view 7`;
+    });
+    await step('smoke: REPEAT sets a Delivery routine and the Operations lead takes one in chat (demo)', async () => { // STORE (24 Oct 2026)
+      const n0 = await page.evaluate(() => window.CC.routines().length);
+      await page.click('.tp-dd'); await page.click('.tp-menu button[data-k="delivery"]');
+      await page.click('.tp-rep'); await page.selectOption('.tp-cad', 'fri'); await page.fill('.tp-at', '16:00');
+      await page.fill('.tp-in', 'draft replies to the new product reviews');
+      await page.evaluate(() => document.querySelector('.tp-in').dispatchEvent(new Event('input', { bubbles: true })));
+      await until(() => /Routine ·/.test(document.querySelector('.tp-hint').textContent));
+      const pre = await page.evaluate(() => document.querySelector('.tp-hint').textContent); if (!/Routine ·/.test(pre) || /not on for/.test(pre)) throw new Error('REPEAT hint: ' + pre);
+      await page.keyboard.press('Enter');
+      await until(() => /Routine set/.test(document.querySelector('.tp-hint').textContent));
+      const dv = await page.evaluate(() => window.CC.routines().filter(r => r.dept === 'delivery').map(r => r.title + ' · ' + r.desc)); if (dv.length !== 1 || !/reviews/i.test(dv[0]) || !/16:00/.test(dv[0])) throw new Error('Delivery routine: ' + JSON.stringify(dv) + ' · ' + await page.evaluate(() => document.querySelector('.tp-hint').textContent));
+      await page.click('.tp-rep'); await page.evaluate(() => document.activeElement && document.activeElement.blur()); // REPEAT off, keys back to the office
+      const lead = await page.evaluate(() => Object.values(window.CC.R).find(r => r.a.dept === 'ops' && r.a.lead).a.id);
+      const done = await page.evaluate(id => window.CC.tasks.handleChat(id, 'every weekday at 7am, list the low stock items'), lead); if (!/^Done\./.test(done)) throw new Error('Operations lead: ' + done);
+      const list = await page.evaluate(id => window.CC.tasks.handleChat(id, 'routines'), lead); if (!/routines:\n/.test(list) || !/low stock/i.test(list) || /not on for/.test(list)) throw new Error('Operations list: ' + list);
+      const n1 = await page.evaluate(() => window.CC.routines().length); if (n1 !== n0 + 2) throw new Error(`routines ${n0} → ${n1}`);
+      await page.click('.tp-chip[data-f="all"]'); // setting a routine switched the feed to Scheduled; the approval step reads it on All
+      return `${dv[0]} · ops lead: ${done.slice(0, 50)}`;
     });
     await step('smoke: department focus opens the chat rail', async () => {
-      await page.keyboard.press('1'); await page.waitForTimeout(1800);
+      await page.keyboard.press('1');
+      await until(() => /\bopen\b/.test(document.getElementById('rail').className) && /\bagentOpen\b/.test(document.getElementById('rail').className) && document.querySelector('#topconn').classList.contains('focus'));
       const cls = await page.evaluate(() => document.getElementById('rail').className); if (!/agentOpen/.test(cls) || !/open/.test(cls)) throw new Error('rail: ' + cls);
       const strip = await page.evaluate(() => document.querySelector('#topconn').className); if (!/focus/.test(strip)) throw new Error('top strip not centred');
-      await page.keyboard.press('Escape'); await page.waitForTimeout(1200);
+      await page.keyboard.press('Escape');
+      await until(() => !document.getElementById('rail').classList.contains('open') && !document.querySelector('#topconn').classList.contains('focus'));
+      if (await page.evaluate(() => document.getElementById('rail').classList.contains('open'))) throw new Error('Esc did not close the rail');
     });
     await step('smoke: B opens and closes the company board', async () => {
       await page.keyboard.press('b'); await page.waitForTimeout(700);
@@ -449,13 +523,14 @@ else {
 
 /* ---------- 3. server smoke ---------- */
 {
-  const port = 4600 + Math.floor(Math.random() * 300);
+  // STORE (24 Oct 2026): ask the OS for a free port; a random 46xx could land on one another program holds (EADDRINUSE)
+  const port = await new Promise((resolve, reject) => { const s = net.createServer().once('error', reject).listen(0, () => { const p = s.address().port; s.close(() => resolve(p)); }); });
   const env = { ...process.env, PORT: String(port) };
   const srv = spawn('node', ['serve.mjs'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = ''; srv.stdout.on('data', d => { log += d; }); srv.stderr.on('data', d => { log += d; });
   const base = `http://localhost:${port}`;
   const up = await (async () => { for (let i = 0; i < 40; i++) { try { const r = await fetch(base + '/api/health'); if (r.ok) return await r.json(); } catch {} await new Promise(r => setTimeout(r, 250)); } return null; })();
-  if (!up) bad('server: starts', log.trim().split('\n').slice(-2).join(' | ') || 'no health response');
+  if (!up) bad('server: starts', (log.match(/^.*Error.*$/m) || [])[0] || log.trim().split('\n').slice(-2).join(' | ') || 'no health response'); // STORE: the error line, not the stack's last lines
   else {
     ok('server: starts', `${up.name} · ${up.backend} · brain ${up.notes} notes`);
     await step('server: serves the office', async () => { const r = await fetch(base + '/'); const t = await r.text(); if (!/AGENTS OFFICE/.test(t)) throw new Error('html missing'); });
@@ -486,18 +561,31 @@ else {
       return `sales set up: ${up.setup.sales} · lessons dir ${path.basename(r.dir)}`;
     });
     await step('server: /api/routines lists the timetable and names the departments', async () => {
-      const r = await (await fetch(base + '/api/routines')).json(); if (!Array.isArray(r.routines) || JSON.stringify(r.depts) !== '["emails","fin","sales"]') throw new Error(JSON.stringify(r).slice(0, 120));
+      const r = await (await fetch(base + '/api/routines')).json(); if (!Array.isArray(r.routines) || JSON.stringify(r.depts) !== '["emails","sales","marketing","ops","fin","delivery"]') throw new Error(JSON.stringify(r).slice(0, 120));
       if (typeof up.routines?.count !== 'number') throw new Error('health has no routines');
       return `${r.routines.length} routines${r.routines.length ? ' · next ' + (r.routines.filter(x => x.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0]?.title || '—') : ''} · ${path.basename(path.dirname(r.path))}/${path.basename(r.path)}`;
     });
-    await step('server: a routine outside Emails, Accounting and Sales is refused with a sentence', async () => {
-      const r = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'marketing', text: 'every day at 9am post the reel' }) });
-      const j = await r.json(); if (r.status !== 400 || !j.refused || !/later release/.test(j.error)) throw new Error(r.status + ' ' + JSON.stringify(j));
+    await step('server: a marketing routine is taken, an unknown department is not', async () => { // STORE: was "outside Emails, Accounting and Sales is refused"
+      const r = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'marketing', text: 'every weekday, post the reel' }) }); // no time: asked back, nothing written to the brain
+      const j = await r.json(); if (r.status !== 400 || j.refused || !j.needsTime) throw new Error('marketing: ' + r.status + ' ' + JSON.stringify(j));
+      const b = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'brain', text: 'every day at 9am tidy the notes' }) });
+      if (b.status !== 400 || !/unknown department/.test((await b.json()).error)) throw new Error('brain routine not refused: ' + b.status);
       const t = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'emails', text: 'every weekday, triage the inbox' }) });
       const k = await t.json(); if (t.status !== 400 || !k.needsTime) throw new Error('missing time not asked back: ' + JSON.stringify(k));
       const n = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'sales', text: 'chase the quiet deals' }) });
       const m = await n.json(); if (n.status !== 400 || !m.noSchedule) throw new Error('no schedule not named: ' + JSON.stringify(m));
       return j.error;
+    });
+    await step('server: the Operations and Delivery leads answer routines in chat, no Claude run', async () => { // STORE (24 Oct 2026): nothing is written to the brain
+      const chat = async (agent, text) => (await fetch(base + '/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent, text }) })).json();
+      const out = [];
+      for (const [k, name] of [['ops', 'Operations'], ['delivery', 'Delivery']]) {
+        const lead = up.agents.find(a => a.department === k && a.lead); if (!lead) throw new Error('no lead in ' + k);
+        const list = await chat(lead.id, 'routines'); if (!list.routines || /not on for/.test(list.reply) || !new RegExp(`${name} (routines:|timetable)`).test(list.reply)) throw new Error(`${k} list: ` + JSON.stringify(list).slice(0, 160));
+        const ask = await chat(lead.id, 'every weekday, check the stock levels'); if (!ask.routines || !/^What time\?/.test(ask.reply)) throw new Error(`${k} asked back: ` + JSON.stringify(ask).slice(0, 160));
+        out.push(`${lead.name}: ${list.reply.split('\n')[0].slice(0, 40)}`);
+      }
+      return out.join(' · ') + ' · missing time asked back';
     });
     await step('server: /api/health says teams and the browser are on; the bar has the Chrome tile', async () => {
       if (!up.teams || up.teams.enabled !== true || up.teams.max !== 4) throw new Error('health.teams: ' + JSON.stringify(up.teams));

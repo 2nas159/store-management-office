@@ -24,7 +24,7 @@
 // <brain>/Agents Office/routines.json fires at its minute whether or not the page is open; the
 // server creates the task, runs it here, and a result that needs the owner's OK waits in
 // WAITING ON APPROVAL until /approve (the agent then does the outbound step) or /reject (with a
-// note, which the agent learns from). Emails, Accounting and Sales only in this release.
+// note, which the agent learns from). STORE (24 Oct 2026): every department (ROUTINE_DEPTS in src/data.js).
 // V3.2 (16 Sep): AGENT TEAMS + CLAUDE IN CHROME. A team task (TEAM in the bar, "as a team" in the sentence,
 // `team: true` on a routine) goes to the department lead, who plans the pieces; the office runs one
 // Claude process per teammate at the same time (teams.mjs, pool of `teams.max`), keeps the shared

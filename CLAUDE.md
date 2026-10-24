@@ -83,7 +83,7 @@ Two more things the office writes into the brain on its own. Both are plain file
 
 ## Routines: tasks on the office's own clock
 
-When the owner says "every Monday …", "each morning …", "on a schedule", "automatically at …", "make X happen every …", that is a **routine**: a task the office fires by itself at that time and runs without anyone typing. **This release: Emails, Accounting and Sales only** (`emails`, `fin`, `sales`). A routine for any other department is refused by the office; tell the owner it comes in a later release rather than writing one.
+When the owner says "every Monday …", "each morning …", "on a schedule", "automatically at …", "make X happen every …", that is a **routine**: a task the office fires by itself at that time and runs without anyone typing. **Every department can have routines** (`emails`, `sales`, `marketing`, `ops`, `fin`, `delivery`; the list is `ROUTINE_DEPTS` in `src/data.js`).
 
 **Where:** `<brain>/Agents Office/routines.json` (`<brain>` as above). Create it with `{"routines": []}` if it does not exist. Never write routines anywhere else.
 
@@ -95,7 +95,7 @@ When the owner says "every Monday …", "each morning …", "on a schedule", "au
   "needsOk": true, "paused": false }
 ```
 
-- `id` short, unique, lower-case. `dept` one of the three. `agent` an id from the roster in that department; pick the seat whose `does` matches, and say which one you chose.
+- `id` short, unique, lower-case. `dept` one of the six. `agent` an id from the roster in that department; pick the seat whose `does` matches, and say which one you chose.
 - `text` is what the agent is asked to do, written as the owner would type it. `title` is the card on the board (under 90 characters).
 - `when`: `{"kind":"daily","at":"HH:MM"}` · `{"kind":"weekdays","at":"HH:MM"}` · `{"kind":"weekly","days":[1,4],"at":"HH:MM"}` (0 = Sunday) · `{"kind":"hourly","every":1,"from":"09:00","to":"17:00","weekdaysOnly":true}` · `{"kind":"minutes","every":2}` (filming only). Times are the machine's local clock, 24-hour.
 - `when.start`: `"YYYY-MM-DD"`, optional (V3.2.1) — the routine starts on that date and never fires before it ("from next Monday", "starting 5 October"). Leave it out to start now. The owner can also set one by clicking a day in the calendar (P) with REPEAT on.
@@ -138,3 +138,9 @@ When the owner says "as a team", "get the team on it", "spawn three teammates to
 - `npm run check` is the loop. Run it after any change to code; fix what is red.
 - `README.md` says what the product does. Keep it true to the code.
 - Release: `node scripts/release.mjs --push` (owner only).
+
+## Changing the code (store fork)
+
+Code changes follow AGENTS.md:
+
+@AGENTS.md
