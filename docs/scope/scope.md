@@ -83,7 +83,7 @@ spec [0002](../specs/0002-auto-approve-rules.md) · code in `approvals.mjs`, `ga
   - [x] Strict gate: per action slots, arguments must match on auto runs (AC-6)
   - [x] Panel: rules under Waiting with use and pause, why a draft waits, the endpoints (AC-8, AC-10)
   - [x] Chat and docs: a lead turns a sentence into a rule on "yes", list, pause, delete; CLAUDE.md (AC-9, AC-11)
-- [ ] Verify it: `/check verify auto approve rules`
+- [x] Verify it: `/check verify auto approve rules`
 - [ ] Test it: `/test auto approve rules`
 - [ ] Review it: `/check review auto approve rules`
 - [ ] Document it: `/document auto approve rules`
