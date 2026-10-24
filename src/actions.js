@@ -28,7 +28,7 @@ export function cardLines(list) {
   return (list || []).map(a => ({ head: `${kindText(a.kind)} · to ${a.to}`, money: money(a), summary: a.summary, tool: a.tool }));
 }
 // is the action's amount and recipient in a tool call's input? The amount matches within 0.005 or in minor units (12.50 = 1250);
-// the recipient as a case insensitive substring of any value. A manual approve only flags a miss; the strict gate of an auto approved run (spec 0002) blocks it
+// the recipient case insensitive, as a whole value inside any value. A manual approve only flags a miss; the strict gate of an auto approved run (spec 0002) blocks it
 export const num = v => typeof v === 'number' ? v : typeof v === 'string' && /^-?\d*\.?\d+$/.test(v.trim()) ? Number(v.trim()) : NaN;
 function values(v, out = []) {
   if (Array.isArray(v)) for (const x of v) values(x, out);
@@ -39,7 +39,8 @@ function values(v, out = []) {
 export function found(a, input) {
   const vals = values(input);
   const amountOk = a.amount == null || vals.some(v => { const n = num(v); return Number.isFinite(n) && (Math.abs(n - a.amount) < 0.005 || n === Math.round(a.amount * 100)); });
-  const to = String(a.to).toLowerCase(), toOk = vals.some(v => String(v).toLowerCase().includes(to));
+  // STORE (review, 24 Oct 2026): the recipient as a whole value — no letter or digit right before or after it, so "#1" never matches "#10"
+  const to = new RegExp(`(^|[^a-z0-9])${String(a.to).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`, 'i'), toOk = vals.some(v => to.test(String(v)));
   const flag = [!amountOk && `amount ${Number(a.amount).toFixed(2)} not found in the call`, !toOk && 'recipient not found in the call'].filter(Boolean).join('; ');
   return { ok: amountOk && toOk, flag };
 }

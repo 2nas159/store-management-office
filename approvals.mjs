@@ -38,6 +38,7 @@ export function validate(r, existing = []) {
   const bad = why => problems.push(`${name}: ${why}`);
   if (!r || typeof r !== 'object' || Array.isArray(r)) return { rule: null, problems: ['a rule is not an object'] };
   if (!out.id) bad('no id or title');
+  if (out.id === 'pause' || out.id === 'resume') bad('"pause" and "resume" are kept for the switch of all rules; pick another id');
   if (!out.title) out.title = out.id;
   if (existing.some(x => x.id === out.id)) bad('two rules share this id');
   out.kinds = list(r.kinds); if (!out.kinds.length) bad('no kinds (which actions it covers)');

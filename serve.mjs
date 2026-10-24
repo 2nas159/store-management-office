@@ -594,7 +594,8 @@ const server = http.createServer(async (req, res) => {
         if (req.method !== 'POST') return json(res, 405, { error: 'POST' });
         approvals.edit(BRAIN, doc => { doc.paused = am[1] === 'pause'; }); console.log(`⚡ auto approvals ${am[1]}d`); return json(res, 200, { ok: true, ...approvalsOut() });
       }
-      const r = approvals.load(BRAIN).rules.find(x => x.id === am[1]); if (!r) return json(res, 404, { error: 'no such rule' });
+      const rid = (() => { try { return decodeURIComponent(am[1]); } catch { return am[1]; } })(); // an id written by hand may hold a space
+      const r = approvals.load(BRAIN).rules.find(x => x.id === rid); if (!r) return json(res, 404, { error: 'no such rule' });
       if (req.method === 'DELETE' && !am[2]) approvals.edit(BRAIN, doc => { doc.rules = doc.rules.filter(x => x?.id !== r.id); });
       else if (req.method === 'POST' && am[2]) approvals.edit(BRAIN, doc => { const x = doc.rules.find(y => y?.id === r.id); if (x) x.paused = am[2] === 'pause'; });
       else return json(res, 405, { error: 'POST …/pause|resume or DELETE' });

@@ -513,6 +513,7 @@ await step('approvals: a rule needs a daily cap; broken rules are named and skip
     [{ id: 'r', kinds: ['reply'], dailyCount: 2, tools: ['gmail'] }, /mcp__<server>__<tool>/],
     [{ id: 'r', kinds: ['reply'], dailyCount: 1.5 }, /whole number/],
     [{ id: 'r', kinds: ['refund'], max: -1, currency: 'USD', dailyMax: 5 }, /max must be a number above 0/],
+    [{ id: 'pause', kinds: ['reply'], dailyCount: 1 }, /kept for the switch of all rules/], // review: /api/approvals/pause is the switch
   ];
   for (const [r, re] of bad) { const v = ap.validate(r); if (!v.problems.some(p => re.test(p))) throw new Error(`${JSON.stringify(r)} → ${v.problems.join(' | ') || 'no problem'}`); }
   for (const r of RULES) { const v = ap.validate(r); if (v.problems.length) throw new Error('a good rule refused: ' + v.problems); }
@@ -610,6 +611,28 @@ await step('approvals: a lead turns a sentence into a rule only after a yes; lis
   if (ap.matchRule(rules, 'the discounts one')?.id !== 'small-discounts' || ap.matchRule(rules, 'the xyz')) throw new Error('match by words');
   const txt = ap.listText({ paused: true, rules }, { entries: [] }); if (!/ALL PAUSED/.test(txt) || !/Small refunds — refund · up to 30\.00 USD each · at most 200\.00 USD a day · 0\.00 of 200\.00 USD today/.test(txt)) throw new Error('list: ' + txt);
   return 'sentence → rule scoped to the department · read back before saving · no cap sent back · words pick the rule';
+});
+
+await step('review: a recipient matches as a whole value, a manual approve keeps argument matching, a strict block lands on the right action', async () => { // STORE (review, 24 Oct 2026): regressions found in the review of 0001 + 0002
+  const S = await import('./src/actions.js'); const A = await import('./actions.mjs'); const os = await import('node:os');
+  const f = (to, input) => S.found({ to, amount: null }, input).ok;
+  if (f('#1', { order: '#10' }) || f('a@b.co', { to: 'aa@b.co' }) || f('a@b.co', { to: 'a@b.com' })) throw new Error('a recipient matched part of another one');
+  if (!f('#1', { note: 'refund for order #1, sorry' }) || !f('jane@example.com', { to: 'Jane <JANE@example.com>' }) || !f('1001', { order: '#1001' }) || !f('#1001', { id: 1001, name: '#1001' })) throw new Error('a recipient inside a longer value was missed');
+  const T = 'mcp__shop__refund_create', list = [{ id: 'a1', tool: T, to: '#1', amount: 12.5 }, { id: 'a2', tool: T, to: '#2', amount: 40 }];
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-review-'));
+  try {
+    const m = path.join(base, 'm'); A.prepareGate(m, list);
+    const call = (dir, id, input) => gateCall(dir, { tool_name: T, tool_input: input, tool_use_id: id });
+    await call(m, 'c1', { order: '#2', amount: 40 }); await call(m, 'c2', { order: '#1', amount: 12.5 });
+    const o = A.outcomes(list, [{ id: 'c1', name: T, input: { order: '#2', amount: 40 }, ok: false, error: 'declined' }, { id: 'c2', name: T, input: { order: '#1', amount: 12.5 }, ok: true }], A.readGate(m).decisions).actions;
+    if (o[0].outcome.status !== 'done' || o[1].outcome.status !== 'failed') throw new Error(`manual approve credited the failure to the wrong refund: a1 ${o[0].outcome.status}, a2 ${o[1].outcome.status}`);
+    const s = path.join(base, 's'); A.prepareGate(s, list, { strict: true });
+    const b = await call(s, 'c3', { order: '#2', amount: 99 }); if (b.code !== 2 || !/blocked: a2: amount 40\.00 not found/.test(b.err)) throw new Error('strict block reason: ' + b.err);
+    const o2 = A.outcomes(list, [{ id: 'c3', name: T, input: {}, ok: false }], A.readGate(s).decisions).actions;
+    if (o2[0].outcome.error || !/^blocked: a2:/.test(o2[1].outcome.error || '')) throw new Error('the strict reason landed on the wrong action: ' + JSON.stringify(o2.map(a => a.outcome)));
+    const rr = A.readRun(s, [{ id: 'c3', name: T }, { id: 'c4', name: 'mcp__shop__list_orders' }]); if (rr.tools.join() !== 'mcp__shop__list_orders') throw new Error('a blocked call counted as used: ' + rr.tools);
+    return '#1 ≠ #10 · a@b.co ≠ aa@b.co · manual approve matches by arguments · a strict block names a2 · blocked calls do not count as used';
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 /* ---------- 1h. the read-only gate of drafts and routines (STORE, spec 0003) ---------- */

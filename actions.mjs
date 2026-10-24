@@ -132,8 +132,10 @@ export function prepareReadGate(dir, gate = {}) {
 // after a read-mode run: what the gate blocked, and whether an MCP call ran with no decision (the hook did not run)
 export function readRun(dir, calls = []) {
   const { decisions } = readGate(dir), seen = new Set(decisions.map(d => d.id).filter(Boolean));
-  return { runDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, why: d.why || '', at: d.at })), runGateFailed: calls.some(c => /^mcp__/.test(c.name || '') && !seen.has(c.id)) };
+  return { runDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, why: d.why || '', at: d.at })), runGateFailed: calls.some(c => /^mcp__/.test(c.name || '') && !seen.has(c.id)), tools: passed(calls, decisions) };
 }
+// the tools a run really used: a call the gate blocked does not light up its connector
+const passed = (calls, decisions) => { const no = new Set(decisions.filter(d => d.allow === false).map(d => d.id)); return [...new Set(calls.filter(c => !no.has(c.id)).map(c => c.name))]; };
 export function runNote(task) {
   if (!task.runDenied?.length && !task.runGateFailed) return '';
   return `## Blocked while ${task.draft ? 'drafting' : 'running'}\n${(task.runDenied || []).map(d => `- ${d.tool}: ${d.why}`).join('\n')}${task.runGateFailed ? '\n- The gate did not run for every call: check what this run did.' : ''}\n`;
@@ -158,7 +160,7 @@ export function outcomes(list, calls = [], decisions = [], at = Date.now()) {
     a.outcome = { status: c.ok === true ? 'done' : c.ok === false ? 'failed' : 'unknown', at, ...(c.ok === false && c.error ? { error: String(c.error).slice(0, 500) } : {}), ...(f.flag ? { flag: f.flag } : {}) };
   }
   const why = decisions.filter(d => d.allow === false && d.why);
-  for (const a of acts) if (!a.outcome) { const w = why.find(d => d.tool === a.tool); if (w) why.splice(why.indexOf(w), 1); a.outcome = { status: 'not_done', at, ...(w ? { error: w.why } : {}) }; }
+  for (const a of acts) if (!a.outcome) { const w = why.find(d => d.action === a.id) || why.find(d => d.tool === a.tool && !d.action); if (w) why.splice(why.indexOf(w), 1); a.outcome = { status: 'not_done', at, ...(w ? { error: w.why } : {}) }; } // a strict block names its action
   return { actions: acts, gateDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, at: d.at, ...(d.why ? { why: d.why } : {}) })), gateFailed };
 }
 // opts: { agent, deptName, business, servers, sdk, dir, ask (askX), model, effort, strict (spec 0002: an auto approved run) }
@@ -178,7 +180,7 @@ export async function approve(task, { agent, deptName, business, servers = [], s
   const { decisions } = readGate(dir);
   fs.rmSync(dir, { recursive: true, force: true });
   const calls = out?.calls || err?.calls || [];
-  return { ...outcomes(list, calls, decisions), ran: true, text: out?.text || '', error: err ? err.message : null, tools: out?.tools || [...new Set(calls.map(c => c.name))] };
+  return { ...outcomes(list, calls, decisions), ran: true, text: out?.text || '', error: err ? err.message : null, tools: passed(calls, decisions) };
 }
 // AC-15: the office stopped in the middle of an approve; what went out is not known
 export function closeOut(task, at = Date.now()) {

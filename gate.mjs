@@ -18,7 +18,7 @@ import path from 'node:path';
 const dir = process.argv[2];
 const line = d => fs.appendFileSync(path.join(dir, 'decisions.jsonl'), JSON.stringify({ at: Date.now(), ...d }) + '\n');
 const block = (why, d) => {
-  try { if (dir) line({ id: d?.id || null, tool: d?.tool || null, allow: false, why }); } catch {}
+  try { if (dir) line({ id: d?.id || null, tool: d?.tool || null, allow: false, why, ...(d?.action ? { action: d.action } : {}) }); } catch {}
   process.stderr.write(`Blocked by the office: ${why}\n`);
   process.exit(2);
 };
@@ -51,13 +51,14 @@ try {
       const mine = (budget.actions || []).filter(a => a.tool === tool);
       const misses = [];
       for (const a of mine) {
-        if (a.strict) { const f = found(a, j.tool_input || {}); if (!f.ok) { misses.push(`${a.id}: ${f.flag}`); continue; } }
+        if (a.strict) { const f = found(a, j.tool_input || {}); if (!f.ok) { misses.push({ id: a.id, why: `${a.id}: ${f.flag}` }); continue; } }
         try { fs.writeFileSync(path.join(dir, slotName(a.id)), String(id), { flag: 'wx' }); }
         catch (e) { if (e.code === 'EEXIST') continue; throw e; }
-        line({ id, tool, allow: true, action: a.id });
+        line({ id, tool, allow: true, ...(a.strict ? { action: a.id } : {}) }); // only a strict run chose the action by its arguments; a manual run's slot is just the next free one
         process.exit(0);
       }
-      block(misses.length ? `blocked: ${misses[0]}` : mine.length ? `${tool} was approved for ${mine.length} call${mine.length > 1 ? 's' : ''} and they are used` : `${tool} is not one of the approved actions`, d);
+      const near = misses.find(m => !/recipient not found/.test(m.why)) || misses[0]; // the action whose recipient the call did name, when there is one
+      block(near ? `blocked: ${near.why}` : mine.length ? `${tool} was approved for ${mine.length} call${mine.length > 1 ? 's' : ''} and they are used` : `${tool} is not one of the approved actions`, { ...d, action: near?.id });
     } catch (e) { block('the gate failed: ' + e.message, d); }
   });
 } catch (e) { block('the gate failed: ' + e.message); }

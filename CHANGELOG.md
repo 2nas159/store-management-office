@@ -1,5 +1,16 @@
 # Changelog
 
+## Store fork (unreleased) — 24 Oct 2026
+
+Changes in this copy (the `store` fork by Ömer Aktay); upstream Agents Office is by Sahni.ai.
+
+- **Every draft lists what it will send** (spec 0001). A draft that waits for your OK ends with a list of its outbound actions: kind, to whom, how much, and the exact connector tool. The approval card shows one line per action and the WAITING row the totals ("3 actions · 912.00 USD"). APPROVE runs exactly those tools, once per action: a hook the office hands Claude Code (`gate.mjs`) blocks anything else, any extra call, the web and the browser. Each action reads done, failed, not done or unknown from the real tool calls, and the note gets an `## Actions` section. A list that cannot be read locks APPROVE until REJECT; an empty one approves with no Claude run. An approve the office was stopped in the middle of is closed out at startup, never re-run. `currency` in the config (default USD).
+- **Auto approve rules** (spec 0002). "Refunds under 30 USD, at most 200 a day": a draft goes out on its own only when every action fits a rule with room left under its daily cap; anything else waits and the card says why. Every rule needs a daily cap; the day's use is written down before the send. Those runs have a strict gate: a call must show the listed amount and recipient. Rules live in `<brain>/Agents Office/approvals.json`, show under the Waiting chip with PAUSE / DELETE and one switch, and a department lead takes them in chat ("auto approve …", read back, on with "yes").
+- **Drafts and read-only routines may only read** (spec 0003). They run behind the gate in read mode: a tool whose name reads passes, a write tool or one the office cannot place is blocked, Chrome may look but not click or type. A blocked call shows in amber and such a draft is never sent by rule. `node toolclass.mjs` prints every tool's class; `"gate": { "read": [...], "write": [...] }` corrects one.
+- **Connectors survive a restart.** `claude mcp list` does not show the claude.ai connectors; what runs report is now kept in `data/connectors.json`, and a fresh list adds to it instead of wiping it.
+- Routines for every department; the three flaky browser smoke steps wait for state instead of a fixed time; a free port for the server smoke.
+- `npm run check`: 75 checks (from 47), and four more live ones under `CHECK_LIVE=1`.
+
 ## 3.2.1-beta.2 — 19 Sep 2026
 
 - **Licence.** LICENSE now opens with the Required Notices (Copyright 2026 Sahni.ai; Agents Office is a Sahni.ai product) and Sahni.ai's additional terms: the name and mark stay, no renaming or rebranding, no wiring it into or bundling it with another product, agent system or workforce, and anything else needs written permission. The PolyForm Noncommercial 1.0.0 text below them is unchanged. README says the same in plain English. No change to the office itself.

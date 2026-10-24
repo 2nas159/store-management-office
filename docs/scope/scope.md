@@ -69,8 +69,8 @@ spec [0001](../specs/0001-outbound-action-list-drafts.md) · code in `actions.mj
   - [x] Approve side thread: call gate, short approve run, outcomes from real calls, empty list path (AC-7, AC-8, AC-9)
   - [x] Unreadable and recovery: locked approve, old drafts, restart close out (AC-3, AC-4, AC-12, AC-15)
   - [x] The rest: brain note section, rework, teams, missing connectors, argument matching (AC-9, AC-10, AC-11, AC-13, AC-14)
-- [ ] Verify it: `/check verify outbound action list on drafts`
-- [ ] Test it: `/test outbound action list on drafts`
+- [x] Verify it: `/check verify outbound action list on drafts`
+- [x] Test it: `/test outbound action list on drafts`
 
 ## Slice 3: Approval rules
 
@@ -85,9 +85,9 @@ spec [0002](../specs/0002-auto-approve-rules.md) · code in `approvals.mjs`, `ga
   - [x] Panel: rules under Waiting with use and pause, why a draft waits, the endpoints (AC-8, AC-10)
   - [x] Chat and docs: a lead turns a sentence into a rule on "yes", list, pause, delete; CLAUDE.md (AC-9, AC-11)
 - [x] Verify it: `/check verify auto approve rules`
-- [ ] Test it: `/test auto approve rules`
-- [ ] Review it: `/check review auto approve rules`
-- [ ] Document it: `/document auto approve rules`
+- [x] Test it: `/test auto approve rules`
+- [x] Review it: `/check review auto approve rules` (in session, 24 Oct: not a fresh-context review; two money-path bugs found and fixed)
+- [x] Document it: `/document auto approve rules`
 
 ### 5. Gate the draft run · GA
 Drafts and read-only routines still hold every connector and rely on the prompt not to send; the 24 Oct verify saw a draft run save a Gmail draft itself. Now that rules send drafts unattended, those runs get the call gate in a read-only mode, so anything outbound goes only through APPROVE or a rule. From spec 0001's follow-up.
@@ -99,9 +99,9 @@ spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, 
   - [x] Read mode in the gate for drafts, team pieces and read-only routines (AC-1, AC-2, AC-5, AC-7, AC-8)
   - [x] The card, row and note show blocks; rules refuse a blocked or ungated draft (AC-5, AC-6)
 - [x] Verify it: `/check verify gate the draft run`
-- [ ] Test it: `/test gate the draft run`
-- [ ] Review it: `/check review gate the draft run`
-- [ ] Document it: `/document gate the draft run`
+- [x] Test it: `/test gate the draft run`
+- [x] Review it: `/check review gate the draft run` (in session, 24 Oct: not a fresh-context review; two money-path bugs found and fixed)
+- [x] Document it: `/document gate the draft run`
 
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
