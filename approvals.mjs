@@ -120,6 +120,8 @@ export function decide(task, { rules = [], paused = false, ledger = { entries: [
   if (paused) return { why: 'auto approvals are paused' };
   if (sdk) return { why: 'the API key backend has no connectors, so nothing is sent by rule' };
   if (!readOf(task).ok) return { why: 'the actions could not be read' };
+  if (task.runDenied?.length) return { why: `the draft tried to write while drafting (${[...new Set(task.runDenied.map(d => String(d.tool).replace(/^mcp__.+?__/, '')))].join(', ')}), so you look at it yourself` }; // STORE spec 0003
+  if (task.runGateFailed) return { why: 'the gate did not run for every call while drafting, so you look at it yourself' };
   if (!task.actions.length) return { why: 'nothing goes out, so it waits for you to read it' };
   const live = rules.filter(r => !r.paused), pending = {}, take = [];
   for (const a of task.actions) {

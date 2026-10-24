@@ -612,6 +612,60 @@ await step('approvals: a lead turns a sentence into a rule only after a yes; lis
   return 'sentence → rule scoped to the department · read back before saving · no cap sent back · words pick the rule';
 });
 
+/* ---------- 1h. the read-only gate of drafts and routines (STORE, spec 0003) ---------- */
+await step('toolclass: names place a tool as read or write, unknown counts as write, your lists decide first, Chrome looks only', async () => { // AC-2, AC-3
+  const tc = await import('./src/toolclass.js');
+  const t = (n, g, i) => tc.classify(n.startsWith('mcp__') ? n : 'mcp__x__' + n, g, i).cls;
+  const read = ['search_threads', 'get_message', 'agents_get', 'graphql_query', 'list_post_templates', 'get_snapshot_schedule', 'get_agent_run', 'get-inventory-levels', 'listEvents', 'slack_read_channel'];
+  const write = ['send_message', 'agents_create', 'graphql_mutation', 'get_or_create_x', 'create_post', 'post_message', 'run_sql', 'get-create-design-async-job', 'refund_create', 'trash_message', 'export-design', 'graphql_schema', 'frobnicate'];
+  for (const n of read) if (t(n) !== 'read') throw new Error(n + ' should read: ' + JSON.stringify(tc.classify('mcp__x__' + n)));
+  for (const n of write) if (t(n) !== 'write') throw new Error(n + ' should write: ' + JSON.stringify(tc.classify('mcp__x__' + n)));
+  if (!tc.classify('mcp__x__frobnicate').unknown) throw new Error('no verb must be marked unknown');
+  const g = { read: ['mcp__shop__run-analytics-query', 'mcp__notion__*'], write: ['mcp__notion__get_secret', 'mcp__shop__list_*'] };
+  if (t('mcp__shop__run-analytics-query', g) !== 'read' || t('mcp__notion__notion-update-page', g) !== 'read' || t('mcp__notion__get_secret', g) !== 'write' || t('mcp__shop__list_orders', g) !== 'write') throw new Error('your lists: write beats read beats the name');
+  if (tc.classify('mcp__shop__run-analytics-query', g).why !== 'yours: read') throw new Error('why for your list');
+  const C = n => 'mcp__claude-in-chrome__' + n;
+  if (t(C('navigate')) !== 'read' || t(C('get_page_text')) !== 'read' || t(C('computer'), {}, { action: 'screenshot' }) !== 'read' || t(C('computer'), {}, { action: 'left_click' }) !== 'write' || t(C('computer'), {}, { action: 'type' }) !== 'write' || t(C('computer')) !== 'write') throw new Error('Chrome: look, do not touch');
+  for (const n of ['form_input', 'javascript_tool', 'file_upload', 'browser_batch', 'shortcuts_execute', 'gif_creator', 'upload_image']) if (t(C(n)) !== 'write') throw new Error('Chrome ' + n + ' must be blocked in read mode');
+  return `${read.length} reads · ${write.length} writes (unknown counts as write) · your lists win, write first · Chrome screenshot yes, click and type no`;
+});
+await step('gate: read mode lets reads through and blocks every write, the browser\'s touches and the gate\'s own failures', async () => { // AC-2, AC-5
+  const A = await import('./actions.mjs'); const os = await import('node:os');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-read-')), dir = path.join(base, 'g');
+  try {
+    const settings = A.prepareReadGate(dir, { read: ['mcp__shop__run-analytics-query'], write: [] });
+    if (JSON.parse(fs.readFileSync(path.join(dir, 'budget.json'), 'utf8')).mode !== 'read' || !fs.existsSync(settings)) throw new Error('read gate not prepared');
+    const call = (id, tool_name, tool_input = {}) => gateCall(dir, { tool_name, tool_input, tool_use_id: id });
+    const cases = [['r1', 'mcp__claude_ai_Google_Calendar__list_events', {}, 0], ['r2', 'mcp__claude_ai_Gmail__send_message', { to: 'x' }, 2], ['r3', 'mcp__claude-in-chrome__computer', { action: 'screenshot' }, 0],
+      ['r4', 'mcp__claude-in-chrome__computer', { action: 'left_click' }, 2], ['r5', 'mcp__claude-in-chrome__form_input', {}, 2], ['r6', 'WebSearch', {}, 0], ['r7', 'Bash', {}, 2], ['r8', 'mcp__shop__run-analytics-query', {}, 0], ['r9', 'mcp__shop__frobnicate', {}, 2], ['r10', 'ToolSearch', {}, 0]];
+    const got = []; for (const [id, n, i, want] of cases) { const r = await call(id, n, i); got.push(r.code); if (r.code !== want) throw new Error(`${n} ${JSON.stringify(i)}: exit ${r.code}, wanted ${want} — ${r.err.trim()}`); }
+    if (!/send_message is a write tool \(name: send\); this run may only read/.test((await call('r11', 'mcp__claude_ai_Gmail__send_message')).err)) throw new Error('the reason');
+    const rr = A.readRun(dir, [{ id: 'r1', name: 'mcp__claude_ai_Google_Calendar__list_events' }, { id: 'zz', name: 'mcp__claude_ai_Gmail__search_threads' }]);
+    if (rr.runDenied.length !== 6 || !rr.runDenied.some(d => /send_message/.test(d.tool) && /may only read/.test(d.why)) || rr.runGateFailed !== true) throw new Error('readRun: ' + JSON.stringify(rr));
+    if (A.readRun(dir, [{ id: 'r1', name: 'mcp__claude_ai_Google_Calendar__list_events' }]).runGateFailed) throw new Error('every call had a decision');
+    fs.rmSync(path.join(dir, 'budget.json')); if ((await call('r12', 'mcp__claude_ai_Google_Calendar__list_events')).code !== 2) throw new Error('no budget must block a read too');
+    return `exit codes ${got.join(',')} · the reason names the class · blocks and an ungated call come back from the run · no budget blocks`;
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+await step('approvals: a draft that tried to write while drafting, or ran a call the gate did not see, is never sent by rule', async () => { // AC-6
+  const ap = await import('./approvals.mjs'); const A = await import('./actions.mjs');
+  const rules = [ap.validate(RULES[0]).rule], t = { id: 't', dept: 'fin', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#1', amount: 5, currency: 'USD', summary: 's' }] };
+  if (!ap.decide(t, { rules }).ok) throw new Error('the clean draft should go by rule');
+  const d1 = ap.decide({ ...t, runDenied: [{ tool: 'mcp__claude_ai_Gmail__send_message' }, { tool: 'mcp__claude_ai_Gmail__send_message' }] }, { rules });
+  if (d1.ok || d1.why !== 'the draft tried to write while drafting (send_message), so you look at it yourself') throw new Error('blocked draft: ' + JSON.stringify(d1));
+  const d2 = ap.decide({ ...t, runGateFailed: true }, { rules }); if (d2.ok || !/gate did not run for every call/.test(d2.why)) throw new Error('ungated draft: ' + JSON.stringify(d2));
+  if (!/^## Blocked while drafting\n- mcp__x__send: a write tool\n- The gate did not run/.test(A.runNote({ draft: 'x', runDenied: [{ tool: 'mcp__x__send', why: 'a write tool' }], runGateFailed: true })) || A.runNote({}) !== '') throw new Error('note section');
+  if (!/may only read/.test(A.READ_LINE) || !/blocks every write tool while you draft/.test(A.draftLine('single')) || !/blocks every write tool while you draft/.test(A.draftLine('piece'))) throw new Error('the agents are not told');
+  return 'blocked → waits with the tool named · ungated → waits · note section · the draft and routine lines say it';
+});
+await step('toolclass: the table of this machine\'s tools, and your gate lists checked', async () => { // AC-4
+  const T = await import('./toolclass.mjs'); const c0 = loadConfig();
+  if (c0.problems.some(p => /^gate\./.test(p))) throw new Error(c0.problems.filter(p => /^gate\./.test(p)).join(' | '));
+  const rows = T.table(path.join(ROOT, 'data'), c0.gate), c = T.counts(rows), un = T.unused(rows, c0.gate);
+  return (rows.length ? `${c.read} read · ${c.write} write · ${c.unknown} unknown (counted as write) across ${rows.length} connectors · node toolclass.mjs prints the table` : 'no tools known yet (the office learns them from its runs)') +
+    (un.length ? ' · ⚠ matches no tool a run has reported (a typo, or a connector not seen yet): ' + un.join(' · ') : ''); // a warning, not a failure
+});
+
 /* ---------- 2. offline smoke (Playwright) ---------- */
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { try { ({ chromium } = await import('playwright-core')); } catch {} }
@@ -829,6 +883,20 @@ else {
       await page.keyboard.press('Escape'); await until(() => !document.getElementById('rail').classList.contains('open'));
       await page.click('.tp-chip[data-f="all"]');
       return 'rules under Waiting with use · PAUSE and PAUSE ALL · the card says why it waits · the done row says "approved by rule Small refunds"';
+    });
+    await step('smoke: a draft blocked while drafting says so on its row and card; a routine blocked while running says so on its row (demo)', async () => { // STORE spec 0003: AC-5
+      await page.evaluate(n => { const base = { dept: 'emails', text: 'x', addedAt: n, by: 'routine', needsOk: true, actionsRead: 'ok', actions: [] };
+        window.CC.tasks.reconcile({ ...base, id: 'chk-blk', agent: 'cmail', title: 'Reply to the client thread', state: 'waiting', waitingAt: n, draft: 'A reply.', result: 'A reply.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__send_message', why: 'a write tool', at: n }], autoWhy: 'the draft tried to write while drafting (send_message), so you look at it yourself' });
+        window.CC.tasks.reconcile({ ...base, id: 'chk-rtn', agent: 'imail', title: 'Triage the internal inbox', state: 'done', doneAt: n, needsOk: false, result: 'Triaged.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__label_thread', why: 'a write tool', at: n }] }); }, Date.now());
+      const metas = () => [...document.querySelectorAll('.tp-row .tp-m')].map(e => e.textContent);
+      await until(() => { const m = [...document.querySelectorAll('.tp-row .tp-m')].map(e => e.textContent); return m.some(x => /blocked while drafting/.test(x)) && m.some(x => /blocked while running/.test(x)); });
+      const m = await page.evaluate(metas); if (!m.some(x => /blocked while drafting/.test(x)) || !m.some(x => /blocked while running/.test(x))) throw new Error('rows: ' + m.filter(x => /blocked/.test(x)).join(' | '));
+      await page.evaluate(() => window.CC.openAgent('cmail'));
+      await until(() => /Blocked while drafting/.test([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || ''));
+      const card = await page.evaluate(() => ([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || '').replace(/\s+/g, ' '));
+      if (!/Blocked while drafting: send_message\./.test(card) || !/Not sent by rule: the draft tried to write while drafting/.test(card)) throw new Error('card: ' + card);
+      await page.keyboard.press('Escape'); await until(() => !document.getElementById('rail').classList.contains('open'));
+      return 'row: blocked while drafting · card: send_message named, not sent by rule · routine row: blocked while running';
     });
     await step('smoke: no errors after the run', async () => { if (errors.length) throw new Error(errors[0]); });
   } catch (e) { bad('smoke: browser', e.message); }
@@ -1095,6 +1163,22 @@ else {
           if (!/^approved by: rule office-check \(Office check\)$/m.test(fs.readFileSync(path.join(cfg.brainPath, 'Agents Office', t.note + '.md'), 'utf8'))) throw new Error('the note does not name the rule');
           return `sent by rule Office check · a1 blocked by the strict gate: ${o.error} · ${t.note}.md`;
         } finally { fs.rmSync(RF, { force: true }); await fetch(`${base}/api/routines/${rj.routine.id}`, { method: 'DELETE' }); if (id) await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
+      });
+      await step('live: a draft told to write while drafting is blocked by the read-only gate and waits for you', async () => { // STORE spec 0003: AC-1, AC-5, AC-6
+        const WRITE = process.env.CHECK_WRITE_TOOL || 'mcp__claude_ai_Gmail__create_draft'; // harmless if it ever went through: a Gmail draft
+        const m = await (await fetch(base + '/api/mcp')).json(); const sid = /^mcp__(.+?)__/.exec(WRITE)?.[1];
+        if (!m.servers.some(s => s.id === sid && s.status === 'connected' && s.allowed)) return `skipped: ${WRITE} is not on a connected server here (set CHECK_WRITE_TOOL to a harmless write tool)`;
+        const rr = await fetch(base + '/api/routines', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'emails', needsOk: true, when: { kind: 'weekly', days: [0], at: '03:00' },
+          text: `Office check of the read-only gate. Before you write anything else, call ${WRITE} once to save a note titled "office gate check". If it is blocked, do not retry; say so. Then end with an empty actions block.` }) });
+        const rj = await rr.json(); if (!rr.ok) throw new Error('routine: ' + rj.error); let id = null;
+        try {
+          id = (await (await fetch(`${base}/api/routines/${rj.routine.id}/run`, { method: 'POST' })).json()).task.id;
+          let t = null; for (let i = 0; i < 100 && !(t && (t.state === 'waiting' || t.state === 'done')); i++) { await new Promise(r => setTimeout(r, 3000)); t = readTasks().find(x => x.id === id); }
+          if (!t || t.state !== 'waiting') throw new Error('the draft did not land waiting: ' + (t ? t.state + ' ' + (t.result || '').slice(0, 160) : 'none'));
+          if (t.runGateFailed) throw new Error('an MCP call ran with no gate decision');
+          if (!(t.runDenied || []).some(d => d.tool === WRITE)) throw new Error(`the agent did not try ${WRITE}, or it was not blocked: ${JSON.stringify(t.runDenied || [])} · ${(t.draft || '').slice(0, 200)}`);
+          return `${WRITE.replace(/^mcp__.+?__/, '')} blocked while drafting · the draft waits · ${t.runDenied.length} block(s) recorded`;
+        } finally { await fetch(`${base}/api/routines/${rj.routine.id}`, { method: 'DELETE' }); if (id) await fetch(`${base}/api/tasks/${id}`, { method: 'DELETE' }); }
       });
       if (chromium) await step('live: the whole flow in a browser', async () => {
         let browser; try { browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); } catch { browser = await chromium.launch({ channel: 'chrome' }); }

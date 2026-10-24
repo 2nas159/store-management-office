@@ -91,13 +91,13 @@ spec [0002](../specs/0002-auto-approve-rules.md) · code in `approvals.mjs`, `ga
 
 ### 5. Gate the draft run · GA
 Drafts and read-only routines still hold every connector and rely on the prompt not to send; the 24 Oct verify saw a draft run save a Gmail draft itself. Now that rules send drafts unattended, those runs get the call gate in a read-only mode, so anything outbound goes only through APPROVE or a rule. From spec 0001's follow-up.
-spec [0003](../specs/0003-gate-the-draft-run.md)
+spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, `toolclass.mjs`, `gate.mjs`, `actions.mjs`, `approvals.mjs`, `serve.mjs`, `src/tasks.js`, `check.mjs`
 **Done when:** a draft or read-only routine cannot call a write tool (blocked before the connector, unknown counts as write), Chrome only looks, a blocked call shows on the card, a blocked draft is never sent by rule, and the owner can correct a tool's class in one config line.
 - [x] Design it (spec): `/architect gate the draft run`
-- [ ] Build it: `/develop gate the draft run`
-  - [ ] Classifier: names plus the owner's overrides, the table command, counts in the check (AC-3, AC-4)
-  - [ ] Read mode in the gate for drafts, team pieces and read-only routines (AC-1, AC-2, AC-5, AC-7, AC-8)
-  - [ ] The card, row and note show blocks; rules refuse a blocked or ungated draft (AC-5, AC-6)
+- [x] Build it: `/develop gate the draft run`
+  - [x] Classifier: names plus the owner's overrides, the table command, counts in the check (AC-3, AC-4)
+  - [x] Read mode in the gate for drafts, team pieces and read-only routines (AC-1, AC-2, AC-5, AC-7, AC-8)
+  - [x] The card, row and note show blocks; rules refuse a blocked or ungated draft (AC-5, AC-6)
 - [ ] Verify it: `/check verify gate the draft run`
 - [ ] Test it: `/test gate the draft run`
 - [ ] Review it: `/check review gate the draft run`

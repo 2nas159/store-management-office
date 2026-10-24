@@ -148,6 +148,14 @@ The top bar shows the MCP servers **this machine's Claude Code** is connected to
 
 `allow` empty means every connected server. `deny` keeps a server in the bar but out of the agents' hands (`"Chrome"` works there too). `departments` says which pods a server is wired to; unknown servers default to every pod. `tools.web` gives the agents web search. `tools.browser` (V3.2 (16 Sep)) gives them the owner's own Chrome through Claude Code's Chrome integration — the run starts with `--chrome` and gets the `claude-in-chrome` server (open tabs, read pages, fill forms on sites the owner is signed in to); it needs the Claude in Chrome extension paired to this machine (`claude --chrome` once) and the Claude Code login. The bar shows a Chrome tile wired to every pod. `teams` (V3.2 (16 Sep)) is Agent Teams: `enabled` shows the TEAM button and makes "as a team" mean it; `max` caps the desks (2–6, default 4).
 
+**Drafts and read-only routines may only read (store fork, spec 0003).** Those runs go through a call gate in read mode: a tool whose name reads (list, get, search …) passes, a write tool or one the office cannot place is blocked, and Chrome may look but not click or type. When the owner says "the drafts can't use X" or "X is a read tool", fix its class in `office.config.json` (or the local copy):
+
+```json
+"gate": { "read": ["mcp__plugin_small-business_shopify__run-analytics-query"], "write": ["mcp__claude_ai_Canva__get-*"] }
+```
+
+Full tool names, `*` as a wildcard; `write` beats `read`, and both beat the name. Only mark a tool `read` when it truly cannot send, post, pay or change anything. `node toolclass.mjs` prints every known tool with its class and why (`--write` for the blocked ones); `npm run check` names a pattern that matches nothing. Takes effect on the next run, no restart.
+
 Agents get only connected servers (plus web when enabled, plus the browser when enabled and paired). They never get Bash, file tools or sub-agents. Their standing rule: read freely; send, post, pay, delete or change data outside this machine **only** when the owner's task explicitly asks for that exact action — in the browser too.
 
 ## Agent Teams

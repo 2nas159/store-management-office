@@ -246,6 +246,14 @@ department lead "auto approve …" and it reads the rule back, then turns it on 
 "rules", "pause … rule" and "pause auto approvals" work there too. The brain note of a draft
 sent by rule says which rule approved it.
 
+Drafts and read-only routines may only read. They run behind the same gate in a read-only mode:
+a connector tool whose name reads (list, get, search …) passes; a tool that writes, or one the
+office cannot place, is blocked before it reaches the connector; Chrome may look but not click
+or type. A blocked call shows in amber on the card and the row, and such a draft is never sent
+by rule. So anything outbound goes only through APPROVE or a rule. `node toolclass.mjs` shows
+every tool's class; correct one with `"gate": { "read": [...], "write": [...] }` in
+`office.config.json`.
+
 The clock lives in the server: `npm start` has to be running, but the page does not have to be
 open. A run missed while the machine was asleep or the office was off is caught up once when it
 comes back, marked LATE; never more than one catch-up per routine. Every firing is a line in the

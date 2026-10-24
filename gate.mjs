@@ -10,6 +10,8 @@
 // that action's amount and recipient are found in its input. Everything else is blocked (exit code 2,
 // reason on stderr), and so is any error in here: the gate fails closed. Every decision is one line
 // in decisions.jsonl, which the office reads after the run.
+// STORE spec 0003: mode "read" (drafts and read-only routines) — a tool passes when src/toolclass.js classes it read
+// (the owner's gate lists first, then the name; Chrome may look, not touch); web search and fetch pass; the rest is blocked.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -34,10 +36,19 @@ try {
     try {
       const j = JSON.parse(raw);
       const tool = String(j.tool_name || ''), id = j.tool_use_id || null; d = { id, tool };
+      const budget = JSON.parse(fs.readFileSync(path.join(dir, 'budget.json'), 'utf8')); // no budget, no call, in every mode
       if (tool === 'ToolSearch') { line({ id, tool, allow: true }); process.exit(0); }
+      if (budget.mode === 'read') { // STORE spec 0003: a draft or read-only routine — reads pass, everything else is blocked
+        if (tool === 'WebSearch' || tool === 'WebFetch') { line({ id, tool, allow: true }); process.exit(0); }
+        if (!tool.startsWith('mcp__')) return block(`${tool || 'this tool'} is not open to a run that may only read`, d);
+        const { classify } = await import('./src/toolclass.js'); // inside the try: if it cannot load, the call is blocked
+        const c = classify(tool, budget.gate || {}, j.tool_input || null);
+        if (c.cls === 'read') { line({ id, tool, allow: true, why: c.why }); process.exit(0); }
+        return block(`${tool} is a write tool (${c.why}); this run may only read`, d);
+      }
       if (!tool.startsWith('mcp__')) return block(`${tool || 'this tool'} is not one of the approved actions`, d);
       const { found } = await import('./src/actions.js'); // inside the try: if it cannot load, the call is blocked
-      const mine = (JSON.parse(fs.readFileSync(path.join(dir, 'budget.json'), 'utf8')).actions || []).filter(a => a.tool === tool);
+      const mine = (budget.actions || []).filter(a => a.tool === tool);
       const misses = [];
       for (const a of mine) {
         if (a.strict) { const f = found(a, j.tool_input || {}); if (!f.ok) { misses.push(`${a.id}: ${f.flag}`); continue; } }

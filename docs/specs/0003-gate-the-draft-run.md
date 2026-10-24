@@ -35,13 +35,13 @@ Facts that shape the design:
   Everything else is blocked (exit 2, a reason), and any error in the gate blocks.
 - **AC-3**: The class of a tool:
   1. The owner's lists in `office.config.json` decide first: `"gate": { "read": [patterns], "write": [patterns] }`, full tool names with `*` as a wildcard. A tool on both lists is write.
-  2. Otherwise the name decides. Strip `mcp__<server>__`, split on `_` and `-`. Any token that is a write verb makes it **write**; else any read verb makes it **read**; else it is **unknown**, which counts as write.
+  2. Otherwise the name decides. Strip `mcp__<server>__`, split into words. A strong write word anywhere (send, create, delete, pay, mutation …) makes it **write**. Otherwise the first verb decides: a read word makes it **read**, and a word that is also a noun (post, schedule, record, run …) makes it write only in first place (`create_post` write, `list_post_templates` read). No verb at all makes it **unknown**, which counts as write.
 - **AC-4**: The verb lists live in one shared module. `node toolclass.mjs` prints every tool the office knows, grouped by connector, with its class and why ("name: search", "yours", "unknown"). `npm run check` prints the counts and any of your patterns that match no known tool.
 - **AC-5**: Each blocked call is recorded on the task as `runDenied: [{ tool, why, at }]`, and logged.
   - A waiting draft with blocks shows "blocked while drafting: <tool>" in amber on the card and the row.
   - A finished read-only routine shows the same on its row and card.
   - The brain note lists the blocked calls.
-- **AC-6**: A draft with any `runDenied` entry, or with an MCP call that has no gate decision (`gateFailed`), is never sent by rule. `autoWhy` then reads "the draft tried to write while drafting (<tool>), so you look at it yourself", or "the gate did not run for every call while drafting".
+- **AC-6**: A draft with any `runDenied` entry, or with an MCP call that has no gate decision (`runGateFailed`), is never sent by rule. `autoWhy` then reads "the draft tried to write while drafting (<tool>), so you look at it yourself", or "the gate did not run for every call while drafting".
 - **AC-7**: The draft line tells the agent it may only read, and that a blocked call is expected and must not be retried.
 - **AC-8**: The gate folder of a run lives at `data/gates/<task id>-run` (`<task id>-<agent>-run` for a team piece), is deleted after the run, and is emptied at startup like 0001's.
 
@@ -68,7 +68,7 @@ Settled during the design (each a pick with the runner up):
 - **Chrome: look, don't touch** (owner). Runner up: no Chrome in drafts.
 - **Drafts and read-only routines** (owner). Runner up: drafts only.
 - **A blocked draft waits with the block shown, and no rule may send it** (owner). Runner up: record it only.
-- **Write wins anywhere in the name.** `get_or_create_x` is write, and `run-analytics-query` is write too (wrong, but safe, and one override line fixes it). Runner up: the first verb decides, which lets `get_or_create` read.
+- **A strong write word wins anywhere; a noun-like word counts only first** (refined while building: "write wins anywhere" made `list_post_templates` and `get_snapshot_schedule` writes). `get_or_create_x` is write, and `run-analytics-query` is write too (wrong, but safe, and one override line fixes it). On this machine: 396 read, 403 write, 18 unknown of 817. Runner up: the first verb decides, which lets `get_or_create` read.
 - **The gate classifies at call time**, by importing the shared classifier inside its try, so a load failure blocks. Runner up: a read list computed before the run, which is blind on the first run after install.
 - **`navigate` is allowed.** Opening a page is how a draft reads a web app. Pages whose plain GET changes something (an unsubscribe link) are the owner's risk, noted below. Runner up: block `navigate`, which leaves Chrome nearly useless for drafts.
 - **`javascript_tool`, `form_input`, `file_upload`, `upload_image`, `browser_batch`, `shortcuts_execute` and `gif_creator` are blocked** in read mode. `browser_batch` can carry clicks, so it is blocked whole rather than inspected.
@@ -87,7 +87,7 @@ Settled during the design (each a pick with the runner up):
 
 **Server**: `askX` already takes `settings`. `run()`, `runTeam` and `runTeamLead` pass a read-mode gate for `draft` and `routine` modes (`actions.prepareReadGate(dir, cfg.gate)`), then read the decisions (`runDenied`) and the calls (`gateFailed`). `approvals.decide` refuses a task with either.
 
-**Task fields**: `runDenied: [{ tool, why, at }]`, and `gateFailed` (0001's field, now also set by draft runs).
+**Task fields**: `runDenied: [{ tool, why, at }]`, and `runGateFailed`, kept apart from 0001's `gateFailed` so a later approve run does not overwrite what the draft run did.
 
 **Key invariants**:
 - No connector call outside the read class runs in a draft or read-only routine.

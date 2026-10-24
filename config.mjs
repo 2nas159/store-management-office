@@ -28,6 +28,10 @@ export function loadConfig() {
   c.port = +c.port || 4520;
   c.problems = [];
   { const cur = String(c.currency ?? 'USD').trim().toUpperCase(); if (/^[A-Z]{3}$/.test(cur)) c.currency = cur; else { c.problems.push(`currency must be a three letter code like USD (got "${c.currency}"), using USD`); c.currency = 'USD'; } } // STORE spec 0001
+  { // STORE spec 0003: the owner's read/write lists for the read-only gate of drafts and routines (full tool names, * wildcard); local wins per list
+    const g = { read: [], write: [], ...(base.gate || {}), ...(local.gate || {}) }; c.gate = { read: [], write: [] };
+    for (const k of ['read', 'write']) { if (!Array.isArray(g[k])) { c.problems.push(`gate.${k} must be a list of tool names`); continue; } for (const p of g[k]) { if (typeof p === 'string' && /^mcp__\S+$/.test(p.trim())) c.gate[k].push(p.trim()); else c.problems.push(`gate.${k}: "${p}" is not a tool name like mcp__<server>__<tool> (* is a wildcard)`); } }
+  }
   c.brainPath = path.resolve(ROOT, c.brain);
   return c;
 }

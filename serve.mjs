@@ -173,6 +173,18 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
   });
 }
 const ask = async (system, user, opts) => (await askX(system, user, { tools: false, ...opts })).text;
+// STORE (spec 0003): a draft or a read-only routine runs with the call gate in read mode — reads pass, every write is blocked.
+// → askX's answer + runDenied (what was blocked) + runGateFailed (an MCP call with no gate decision). Other modes run as before.
+async function askFor(mode, dir, system, user, opts) {
+  if (!(mode === 'draft' || mode === 'routine') || sdk) return { ...(await askX(system, user, opts)), runDenied: [], runGateFailed: false };
+  const settings = actions.prepareReadGate(dir, cfg.gate);
+  let out = null, err = null; try { out = await askX(system, user, { ...opts, settings }); } catch (e) { err = e; }
+  const r = actions.readRun(dir, out?.calls || err?.calls || []); fs.rmSync(dir, { recursive: true, force: true });
+  for (const d of r.runDenied) console.warn(`  ⛔ ${path.basename(dir)} blocked while ${mode === 'draft' ? 'drafting' : 'running'}: ${d.tool}`);
+  if (r.runGateFailed) console.warn(`  ⚠ ${path.basename(dir)} an MCP call ran with no gate decision`);
+  if (err) throw err;
+  return { ...out, ...r };
+}
 function parseJSON(text) {
   const s = text.replace(/```json|```/g, ''); const a = s.indexOf('{'), b = s.lastIndexOf('}');
   return JSON.parse(s.slice(a, b + 1));
@@ -247,7 +259,7 @@ function agentSystem(a, index, read, { extra = '', words = 260 } = {}) {
     `${mcp.promptText(a.tools)}\n\nCOMPANY NOTES\n${businessContext(index)}\n\nNOTES YOU READ FOR THIS TASK\n${contextText(index, read)}`;
 }
 // STORE (spec 0001): a draft ends with its actions block (role 'single' or 'lead'; a team 'piece' writes none); the approve step is actions.approve, not a mode line
-const modeLineFor = (mode, task, role = 'single') => mode === 'draft' ? actions.draftLine(role) : '';
+const modeLineFor = (mode, task, role = 'single') => mode === 'draft' ? actions.draftLine(role) : mode === 'routine' ? actions.READ_LINE : ''; // STORE spec 0003: a read-only routine is told it may only read
 const pickFor = (task, a) => { // model + effort: four places, one precedence (task > routine > agent > office)
   const pick = modelFor({ task: task.model, routine: task.routineModel, agent: a.model, office: cfg.model });
   const eff = effortFor({ task: task.effort, routine: task.routineEffort, agent: a.effort, office: cfg.effort, model: pick.model });
@@ -271,9 +283,9 @@ async function run(task, feedback, mode) { // mode: undefined (a task from the b
   const user = `Task: ${task.title}\nOwner's request: ${task.text}` + (task.plan?.length ? `\nAgreed plan: ${task.plan.join(' → ')}` : '') + routineLine + modeLine +
     (feedback ? `\n\nThe owner reviewed your previous version and asked for changes: "${feedback}"\nPrevious version:\n${task.result}` + (mode === 'draft' ? actions.reworkLine(task.actions) : '') : '');
   const { pick, eff } = pickFor(task, a);
-  const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort });
+  const { text, tools, modelId: ran, runDenied, runGateFailed } = await askFor(mode, path.join(GATES, `${task.id}-run`), system, user, { model: pick.model, effort: eff.effort });
   if (!text) throw new Error('Claude returned nothing');
-  return { result: text, read, tools: toolKeys(tools), used: mcp.namesOf(tools), skills: skills.names(a), modelUsed: pick.model, modelFrom: pick.from, modelId: ran, effortUsed: eff.effort || '', effortFrom: eff.from };
+  return { result: text, read, tools: toolKeys(tools), used: mcp.namesOf(tools), skills: skills.names(a), modelUsed: pick.model, modelFrom: pick.from, modelId: ran, effortUsed: eff.effort || '', effortFrom: eff.from, runDenied, runGateFailed };
 }
 
 /* ---------- V3.2 (16 Sep) Agent Teams: the lead plans, the desks work at once, the lead writes the final ---------- */
@@ -304,9 +316,9 @@ async function runTeam(task, mode) {
       const system = agentSystem(a, index, read, { extra: teams.teamSection({ me: a, lead, pieces: task.team.pieces, nameOf }), words: 220 });
       const user = `Task (the whole request, for context): ${task.title}\nOwner's request: ${task.text}\n\nYOUR PIECE: ${piece.title}\n${piece.text}` + routineLineFor(task) + modeLineFor(mode, task, 'piece');
       const { pick, eff } = pickFor(task, a);
-      const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort });
+      const { text, tools, modelId: ran, runDenied, runGateFailed } = await askFor(mode, path.join(GATES, `${task.id}-${a.id}-run`), system, user, { model: pick.model, effort: eff.effort });
       const { body, messages } = teams.parseMessages(text, ids);
-      Object.assign(piece, { result: body || '(empty)', tools: toolKeys(tools), used: mcp.namesOf(tools), read, modelId: ran, error: !text });
+      Object.assign(piece, { result: body || '(empty)', tools: toolKeys(tools), used: mcp.namesOf(tools), read, modelId: ran, error: !text, ...(runDenied.length ? { runDenied } : {}), ...(runGateFailed ? { runGateFailed } : {}) });
       for (const m of messages) task.team.messages.push({ from: a.id, to: m.to === lead.id ? 'lead' : m.to, text: m.text, at: Date.now() });
     } catch (e) { Object.assign(piece, { result: 'Could not complete this piece: ' + e.message, error: true }); }
     piece.state = 'done'; piece.doneAt = Date.now(); persist(task);
@@ -323,19 +335,20 @@ async function runTeamLead(task, feedback, mode) {
   const system = agentSystem(lead, index, read, { extra: `TEAM\nYou lead this team. The pieces below were done by your teammates (one of them may be yours). You write the finished deliverable from them.`, words: 450 });
   const user = teams.synthPrompt({ task, pieces: tm.pieces || [], messages: tm.messages || [], nameOf, feedback }) + routineLineFor(task) + modeLineFor(mode, task, 'lead') + (feedback && mode === 'draft' ? actions.reworkLine(task.actions) : '');
   const { pick, eff } = pickFor(task, lead);
-  const { text, tools, modelId: ran } = await askX(system, user, { model: pick.model, effort: eff.effort, maxTokens: 6000 });
+  const { text, tools, modelId: ran, runDenied: leadDenied, runGateFailed: leadFailed } = await askFor(mode, path.join(GATES, `${task.id}-run`), system, user, { model: pick.model, effort: eff.effort, maxTokens: 6000 });
   if (!text) throw new Error('Claude returned nothing');
+  const runDenied = [...(tm.pieces || []).flatMap(p => p.runDenied || []), ...leadDenied], runGateFailed = leadFailed || (tm.pieces || []).some(p => p.runGateFailed); // STORE spec 0003: the whole team's blocks
   const allTools = [...new Set([...(tm.pieces || []).flatMap(p => p.tools || []), ...toolKeys(tools)])];
   const allUsed = [...new Set([...(tm.pieces || []).flatMap(p => p.used || []), ...mcp.namesOf(tools)])];
   const allRead = [...new Set([...read, ...(tm.pieces || []).flatMap(p => p.read || [])])];
-  return { result: text, read: allRead, tools: allTools, used: allUsed, skills: skills.names(lead), modelUsed: pick.model, modelFrom: pick.from, modelId: ran, effortUsed: eff.effort || '', effortFrom: eff.from, team: tm };
+  return { result: text, read: allRead, tools: allTools, used: allUsed, skills: skills.names(lead), modelUsed: pick.model, modelFrom: pick.from, modelId: ran, effortUsed: eff.effort || '', effortFrom: eff.from, team: tm, runDenied, runGateFailed };
 }
 function writeNote(task) { // the deliverable becomes a note in the brain, linked to what was read
   fs.mkdirSync(NOTES_DIR, { recursive: true });
   const a = AGENTS.find(x => x.id === task.agent);
   const name = `${new Date(task.doneAt).toISOString().slice(0, 10)} ${slug(task.title)}`;
   const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && task.autoApproved ? '\n' + approvals.noteLines(task) : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
-    `# ${task.title}\n\n${task.result}\n\n${task.approved && Array.isArray(task.actions) ? actions.noteSection(task.actions, task) + '\n' : ''}---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf); // STORE spec 0001: what went out, per action
+    `# ${task.title}\n\n${task.result}\n\n${task.approved && Array.isArray(task.actions) ? actions.noteSection(task.actions, task) + '\n' : ''}${actions.runNote(task) ? actions.runNote(task) + '\n' : ''}---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf); // STORE spec 0001: what went out, per action
   fs.writeFileSync(path.join(NOTES_DIR, name + '.md'), body);
   return name;
 }
@@ -434,6 +447,7 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
       Object.assign(task, { read: out.read, tools: [...new Set([...(task.tools || []), ...out.tools])], used: [...new Set([...(task.used || []), ...out.used])], skills: out.skills, error: false, modelUsed: out.modelUsed, modelFrom: out.modelFrom, modelId: out.modelId, effortUsed: out.effortUsed, effortFrom: out.effortFrom, ...(out.team ? { team: out.team } : {}) });
       if (task.needsOk) { // STORE spec 0001: the draft's actions block → actions + actionsRead; only the fence leaves the draft
         for (const k of ['actions', 'actionsRead', 'actionsWhy', 'gateDenied', 'gateFailed']) delete task[k];
+        Object.assign(task, { runDenied: out.runDenied?.length ? out.runDenied : undefined, runGateFailed: out.runGateFailed || undefined }); // STORE spec 0003: before the rules look at it
         const d = actions.fromDraft(out.result, { servers: mcp.usable(), currency: cfg.currency, sdk: !!sdk });
         Object.assign(task, { result: d.body, draft: d.body, actions: d.actions, actionsRead: d.actionsRead, ...(d.actionsWhy ? { actionsWhy: d.actionsWhy } : {}) });
         task.state = 'waiting'; task.waitingAt = Date.now(); task.ask = routines.askLine(task);
@@ -442,7 +456,7 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
         if (au.auto) { Object.assign(task, { state: 'doing', startedAt: Date.now(), approving: true }); delete task.ask; console.log(`  ⚡ ${task.id} approved by rule: ${task.autoApproved.rules.map(r => r.title).join(', ')}`); }
         else if (au.why) console.log(`  ↳ ${task.id} waits for you: ${au.why}`);
       }
-      else { task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); await rebuildGraph(); }
+      else { Object.assign(task, { runDenied: out.runDenied?.length ? out.runDenied : undefined, runGateFailed: out.runGateFailed || undefined }); task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); await rebuildGraph(); } // STORE spec 0003: a read-only routine's blocks
     }
   } catch (e) {
     delete task.approving; Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });

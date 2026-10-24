@@ -26,7 +26,8 @@ const NEED_AMOUNT = ['refund', 'payment'];
 const STOPPED = 'the office stopped while sending, check before resending';
 
 /* ---------- the draft ---------- */
-const DRAFT = '\nPrepare everything, but send, post, pay or change NOTHING outside this machine: the owner reads this first and approves it.';
+const DRAFT = '\nPrepare everything, but send, post, pay or change NOTHING outside this machine: the owner reads this first and approves it.' +
+  ' The office blocks every write tool while you draft: if a call is blocked, do not try it again or another way.'; // STORE spec 0003
 const EXAMPLE = '```actions\n[\n {"kind":"reply","tool":"mcp__claude_ai_Gmail__send_message","to":"jane@example.com","summary":"Reply to Jane: order #1042 ships Friday","content":"Hi Jane, your order #1042 ships on Friday. Thank you for waiting."},\n {"kind":"refund","tool":"mcp__shopify__refund_create","to":"#1042","amount":12.5,"currency":"USD","summary":"Refund the shipping on order #1042"}\n]\n```';
 export function draftLine(role = 'single') {
   if (role === 'piece') return DRAFT + ' Say in one line what your piece would send, if anything. Do not write an actions block: the lead writes the one list for the whole team.';
@@ -113,10 +114,29 @@ export function prepareGate(dir, list, { strict = false } = {}) {
   fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
   const actions = list.map((a, i) => ({ id: a.id || 'a' + (i + 1), tool: a.tool, to: a.to ?? null, amount: a.amount ?? null, strict: !!strict }));
   fs.writeFileSync(path.join(dir, 'budget.json'), JSON.stringify({ actions }));
+  return hookSettings(dir);
+}
+function hookSettings(dir) {
   const command = `"${fwd(process.execPath)}" "${fwd(GATE)}" "${fwd(dir)}"`;
   const file = path.join(dir, 'settings.json');
   fs.writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: 30 }] }] } }));
   return file;
+}
+/* ---------- STORE spec 0003: drafts and read-only routines run with the gate in read mode ---------- */
+export const READ_LINE = '\nThis run may only read: the office blocks every tool that sends, posts, pays or changes something, before it runs. If a call is blocked, do not try it again or another way; say in your reply what you would have done.';
+export function prepareReadGate(dir, gate = {}) {
+  fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'budget.json'), JSON.stringify({ mode: 'read', gate: { read: gate.read || [], write: gate.write || [] } }));
+  return hookSettings(dir);
+}
+// after a read-mode run: what the gate blocked, and whether an MCP call ran with no decision (the hook did not run)
+export function readRun(dir, calls = []) {
+  const { decisions } = readGate(dir), seen = new Set(decisions.map(d => d.id).filter(Boolean));
+  return { runDenied: decisions.filter(d => d.allow === false).map(d => ({ tool: d.tool, why: d.why || '', at: d.at })), runGateFailed: calls.some(c => /^mcp__/.test(c.name || '') && !seen.has(c.id)) };
+}
+export function runNote(task) {
+  if (!task.runDenied?.length && !task.runGateFailed) return '';
+  return `## Blocked while ${task.draft ? 'drafting' : 'running'}\n${(task.runDenied || []).map(d => `- ${d.tool}: ${d.why}`).join('\n')}${task.runGateFailed ? '\n- The gate did not run for every call: check what this run did.' : ''}\n`;
 }
 export function readGate(dir) {
   let txt = ''; try { txt = fs.readFileSync(path.join(dir, 'decisions.jsonl'), 'utf8'); } catch {}
