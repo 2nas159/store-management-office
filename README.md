@@ -262,7 +262,7 @@ its Client ID and Secret go in `office.config.local.json`, never the shared file
 `<brain>/Agents Office/triggers.json` says which desk does what; everything one check finds
 becomes one task, capped per day, run like a routine draft. Customer-written text stays out of
 the task unless the trigger opts in. The first check records where the store stands and starts
-nothing. `node triggers.mjs` tests the connection without starting anything; the triggers and
+nothing; a new trigger starts from when it is added. `node triggers.mjs` tests the connection without starting anything; the triggers and
 the store's status show under the **Scheduled** chip.
 
 The clock lives in the server: `npm start` has to be running, but the page does not have to be

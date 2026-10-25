@@ -68,7 +68,7 @@ export function edit(brainPath, fn) {
 }
 
 /* ---------- run state ---------- */
-export const loadState = dataDir => ({ cursor: null, seen: {}, low: {}, day: null, counts: {}, held: {}, stale: [], lastCheck: null, lastOk: null, problem: null, fails: 0, backoffUntil: 0, ...readJSON(stateFile(dataDir), {}) });
+export const loadState = dataDir => ({ cursor: null, seen: {}, low: {}, added: {}, day: null, counts: {}, held: {}, stale: [], lastCheck: null, lastOk: null, problem: null, fails: 0, backoffUntil: 0, ...readJSON(stateFile(dataDir), {}) });
 export function saveState(dataDir, st, now = Date.now()) {
   for (const [k, at] of Object.entries(st.seen)) if (now - at > KEEP_SEEN) delete st.seen[k];
   st.stale = st.stale.slice(-20);
@@ -88,7 +88,7 @@ export const ORDERS_Q = (customerText) => `query Orders($q: String!, $after: Str
     }
   }
 }`;
-export const STOCK_Q = `query Low($q: String!) { productVariants(first: 100, query: $q) { nodes { id title sku inventoryQuantity inventoryItem { tracked } product { title status } } } }`;
+export const STOCK_Q = `query Low($q: String!) { productVariants(first: 100, query: $q) { nodes { id title sku inventoryQuantity inventoryItem { tracked } product { title status isGiftCard } } } }`;
 
 const money = m => m ? `${Number(m.amount).toFixed(2)} ${m.currencyCode}` : '';
 const when = iso => iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : '';
@@ -120,15 +120,21 @@ export function step({ triggers, state, orders, variants, maxUpdated, now = Date
   const st = state, live = triggers.filter(t => !t.paused), fires = [];
   const today = dayKey(now); if (st.day !== today) { st.day = today; st.counts = {}; }
   const first = !st.cursor;
+  // review (25 Oct): each trigger starts from when it was first seen — a trigger added on Friday never reacts to Monday's
+  // orders, and a new stock trigger records what is already low without firing. A deleted trigger's state goes with it.
+  st.added = st.added || {}; const known = new Set(triggers.map(t => t.id)), isNew = new Set();
+  for (const t of triggers) if (!st.added[t.id]) { st.added[t.id] = now; isNew.add(t.id); }
+  for (const box of ['added', 'held', 'counts']) for (const id of Object.keys(st[box] || {})) if (!known.has(id)) delete st[box][id];
+  for (const k of Object.keys(st.low)) if (!known.has(k.split('|')[0])) delete st.low[k];
   const since = st.cursor ? Date.parse(st.cursor) - OVERLAP : now;
   const fresh = [];
   if (orders) for (const e of orderEvents(orders, since)) { if (st.seen[e.key]) continue; st.seen[e.key] = now; if (!first) fresh.push(e); }
   if (variants) { // stock_low: once per trigger and variant until it is above the trigger's line again
     for (const t of triggers.filter(x => x.event === 'stock_low')) {
       const lowNow = new Set();
-      for (const v of variants) if (v.inventoryQuantity <= t.below && v.inventoryItem?.tracked !== false && (!v.product?.status || v.product.status === 'ACTIVE')) { // untracked stock and products not on sale (draft, archived) never count
+      for (const v of variants) if (v.inventoryQuantity <= t.below && v.inventoryItem?.tracked !== false && (!v.product?.status || v.product.status === 'ACTIVE') && !v.product?.isGiftCard) { // untracked stock, gift cards and products not on sale (draft, archived) never count
         lowNow.add(v.id); const k = `${t.id}|${v.id}`; if (st.low[k]) continue; st.low[k] = now;
-        if (!first) fresh.push({ kind: 'stock_low', key: `stock_low:${t.id}:${v.id}:${now}`, at: new Date(now).toISOString(), only: t.id, variant: v.id, line: `${v.product?.title || 'a product'}${v.title && v.title !== 'Default Title' ? ' — ' + v.title : ''}${v.sku ? ` (SKU ${v.sku})` : ''}: ${v.inventoryQuantity} left (at or below ${t.below})`, words: [] });
+        if (!first && !isNew.has(t.id)) fresh.push({ kind: 'stock_low', key: `stock_low:${t.id}:${v.id}:${now}`, at: new Date(now).toISOString(), only: t.id, variant: v.id, line: `${v.product?.title || 'a product'}${v.title && v.title !== 'Default Title' ? ' — ' + v.title : ''}${v.sku ? ` (SKU ${v.sku})` : ''}: ${v.inventoryQuantity} left (at or below ${t.below})`, words: [] });
       }
       for (const k of Object.keys(st.low)) if (k.startsWith(t.id + '|') && !lowNow.has(k.slice(t.id.length + 1))) delete st.low[k]; // recovered: may fire again
     }
@@ -138,7 +144,7 @@ export function step({ triggers, state, orders, variants, maxUpdated, now = Date
   for (const e of fresh) if (now - Date.parse(e.at) > CATCH_UP) st.stale.push({ kind: e.kind, line: e.line, at: e.at }); // too old to start: listed only
   const ready = fresh.filter(e => now - Date.parse(e.at) <= CATCH_UP);
   for (const t of triggers) {
-    const mine = ready.filter(e => e.kind === t.event && (!e.only || e.only === t.id) && !(t.filter.minTotal !== undefined && e.total !== null && e.total < t.filter.minTotal));
+    const mine = ready.filter(e => e.kind === t.event && (!e.only || e.only === t.id) && Date.parse(e.at) >= st.added[t.id] - OVERLAP && !(t.filter.minTotal !== undefined && e.total !== null && e.total < t.filter.minTotal));
     if (t.paused) continue; // a paused trigger lets its events pass by (they are seen, not held)
     const held = st.held[t.id] || [], batch = [...held, ...mine];
     if (!batch.length) continue;

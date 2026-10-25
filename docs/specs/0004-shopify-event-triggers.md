@@ -91,6 +91,8 @@ Settled during the design (each a pick with the runner up):
 - **Batch per check, a daily cap per trigger** (owner). Runner up: one task per event.
 - **Structured fields only by default.** Customer-written text is where an injected instruction would come from, and rules can send drafts unattended. A trigger opts in with `customerText: true`, and the text is then fenced as data. Runner up: always include it, marked as data, which relies on the model alone.
 - **Read-only access, checked.** The office reads the granted scopes and will not poll with a write scope, so even a leaked config cannot change the store. Runner up: trust the owner to pick read scopes.
+- **Each trigger starts from when it is added** (found in the review, 25 Oct). The store's cursor is shared, so a trigger added days after the last one would have reacted to everything since, and a new stock trigger would have fired for what was already low. Each trigger now records its own start, and a deleted trigger's state is dropped.
+- **Live findings** (25 Oct): untracked inventory, gift cards and products not on sale (draft, archived) read 0 stock in Shopify and never count as low.
 - **The first check records and starts nothing.** Connecting a store with a year of orders must not start a year of drafts. Runner up: a backfill window, which is a later option.
 - **Catch-up after downtime: 24 hours, batched.** Older events are listed, not started. Runner up: catch up everything.
 - **`stock_low` fires once per variant until it recovers above `below`.** Runner up: on every check while low, which is a flood.

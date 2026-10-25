@@ -17,7 +17,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | D | Agent Teams | Existing | existing |
 | E | Calendar and scheduled tasks | Existing | existing |
 | F | Connectors, browser, models and usage | Existing | existing |
-| 1 | Steady smoke checks | Foundation | in-progress |
+| 1 | Steady smoke checks | Foundation | done |
 | 2 | Routines for every department | Slice 1 | in-progress |
 | 3 | Outbound action list on drafts | Slice 2 | in-progress |
 | 4 | Auto approve rules | Slice 3 | in-progress |
@@ -46,7 +46,7 @@ MCP servers from `claude mcp list` wired to pods, Claude in Chrome, Sonnet, Opus
 
 ## Foundations
 
-### 1. Steady smoke checks · in-progress
+### 1. Steady smoke checks · done
 Three browser smoke steps fail at random because they wait a fixed time. Every later feature is proven by `npm run check`, so it has to be trustworthy first. code in `check.mjs`
 **Done when:** `npm run check` passes 47 of 47 on three runs in a row on this machine, with no step slowed down by more than a few seconds.
 - [x] `/develop steady smoke checks`
