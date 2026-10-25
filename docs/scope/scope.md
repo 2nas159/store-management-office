@@ -112,7 +112,7 @@ spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `
 **Done when:** each of the five events, set in triggers.json, starts one batched task per check within its daily cap; nothing starts twice or on the first check; the office's Shopify access is read-only and checked; a problem with Shopify shows in plain words in the panel.
 - [x] Design it (spec): `/architect shopify event triggers`
 - [x] Build it: `/develop shopify event triggers`
-  - [x] Facts and the client: token flow, read scopes, API version confirmed; shopify.mjs (AC-1, AC-7, AC-9) — the GraphQL fields are confirmed against the live store by `node triggers.mjs` once the app is installed (open)
+  - [x] Facts and the client: token flow, read scopes, API version confirmed; shopify.mjs (AC-1, AC-7, AC-9) — fields confirmed against the live store with `node triggers.mjs` (25 Oct)
   - [x] Thread: return requests end to end, batching, cap, structured EVENTS text (AC-2 to AC-6)
   - [x] The other events: orders created, cancelled, refunded; low stock; first check; catch-up (AC-2)
   - [x] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)

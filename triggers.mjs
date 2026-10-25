@@ -88,7 +88,7 @@ export const ORDERS_Q = (customerText) => `query Orders($q: String!, $after: Str
     }
   }
 }`;
-export const STOCK_Q = `query Low($q: String!) { productVariants(first: 100, query: $q) { nodes { id title sku inventoryQuantity product { title } } } }`;
+export const STOCK_Q = `query Low($q: String!) { productVariants(first: 100, query: $q) { nodes { id title sku inventoryQuantity inventoryItem { tracked } product { title status } } } }`;
 
 const money = m => m ? `${Number(m.amount).toFixed(2)} ${m.currencyCode}` : '';
 const when = iso => iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : '';
@@ -126,7 +126,7 @@ export function step({ triggers, state, orders, variants, maxUpdated, now = Date
   if (variants) { // stock_low: once per trigger and variant until it is above the trigger's line again
     for (const t of triggers.filter(x => x.event === 'stock_low')) {
       const lowNow = new Set();
-      for (const v of variants) if (v.inventoryQuantity <= t.below) {
+      for (const v of variants) if (v.inventoryQuantity <= t.below && v.inventoryItem?.tracked !== false && (!v.product?.status || v.product.status === 'ACTIVE')) { // untracked stock and products not on sale (draft, archived) never count
         lowNow.add(v.id); const k = `${t.id}|${v.id}`; if (st.low[k]) continue; st.low[k] = now;
         if (!first) fresh.push({ kind: 'stock_low', key: `stock_low:${t.id}:${v.id}:${now}`, at: new Date(now).toISOString(), only: t.id, variant: v.id, line: `${v.product?.title || 'a product'}${v.title && v.title !== 'Default Title' ? ' — ' + v.title : ''}${v.sku ? ` (SKU ${v.sku})` : ''}: ${v.inventoryQuantity} left (at or below ${t.below})`, words: [] });
       }

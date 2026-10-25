@@ -772,6 +772,9 @@ await step('triggers: customer-written text stays out of the task unless the tri
   const v = q => [{ id: 'V1', title: 'Large', sku: 'MUG-L', inventoryQuantity: q, product: { title: 'Blue mug' } }], at = Date.parse('2026-10-25T10:00:00Z');
   const n = q => T.step({ triggers: [low], state: st, orders: null, variants: q === null ? [] : v(q), now: at }).fires.length;
   const seq = [n(4), n(3), n(null), n(4)].join(); if (seq !== '1,0,0,1') throw new Error('low stock fired ' + seq + ' (want 1,0,0,1: once, quiet while low, again after recovering)');
+  const st2 = { cursor: '2026-10-25T09:00:00Z', seen: {}, low: {}, day: null, counts: {}, held: {}, stale: [] }; // found on the real store: untracked stock and archived products read 0
+  const odd = [{ id: 'U', title: 'Default Title', inventoryQuantity: 0, inventoryItem: { tracked: false }, product: { title: 'The Inventory Not Tracked Snowboard', status: 'ACTIVE' } }, { id: 'A', title: 'Default Title', inventoryQuantity: 0, inventoryItem: { tracked: true }, product: { title: 'The Archived Snowboard', status: 'ARCHIVED' } }, { id: 'D', title: 'Default Title', inventoryQuantity: 1, inventoryItem: { tracked: true }, product: { title: 'The Draft Snowboard', status: 'DRAFT' } }];
+  if (T.step({ triggers: [low], state: st2, orders: null, variants: odd, now: at }).fires.length) throw new Error('untracked stock or a product not on sale counted as low');
   return 'note and typed reasons left out · reason codes kept · opted in: fenced, a ``` in it cannot break out · stock 4 → once, 3 → quiet, recovered, 4 → again';
 });
 
