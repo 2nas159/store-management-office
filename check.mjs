@@ -1004,9 +1004,9 @@ else {
       await until(() => document.querySelectorAll('.tp-row.rule').length === 2);
       const rows = await page.evaluate(() => [...document.querySelectorAll('.tp-row.rule')].map(e => e.textContent.replace(/\s+/g, ' '))); // textContent: the panel sets the metas in capitals by CSS
       if (!/AUTO APPROVE · 1 rule/.test(rows[0]) || !/Small refunds/.test(rows[1]) || !/40\.00 of 200\.00 USD today/.test(rows[1])) throw new Error('rule rows: ' + JSON.stringify(rows));
-      await page.click('.tp-row.rule[data-rule="small-refunds"] [data-ract="pause"]'); await until(() => document.querySelector('.tp-row.rule[data-rule="small-refunds"]')?.classList.contains('paused'));
+      await page.evaluate(() => document.querySelector('.tp-row.rule[data-rule="small-refunds"] [data-ract="pause"]').click()); // one atomic click: the demo re-draws the panel rows while Playwright aims await until(() => document.querySelector('.tp-row.rule[data-rule="small-refunds"]')?.classList.contains('paused'));
       if (!await page.evaluate(() => window.CC.tasks.rules().rules[0].paused === true && document.querySelector('.tp-row.rule[data-rule="small-refunds"]').classList.contains('paused'))) throw new Error('PAUSE did not take');
-      await page.click('.tp-row.rule.head [data-ract="pause"]'); await until(() => /ALL PAUSED/.test(document.querySelector('.tp-row.rule.head')?.textContent || ''));
+      await page.evaluate(() => document.querySelector('.tp-row.rule.head [data-ract="pause"]').click()); await until(() => /ALL PAUSED/.test(document.querySelector('.tp-row.rule.head')?.textContent || ''));
       if (!await page.evaluate(() => window.CC.tasks.rules().paused === true)) throw new Error('PAUSE ALL did not take');
       await page.evaluate(n => { const base = { dept: 'fin', text: 'x', addedAt: n, by: 'routine', needsOk: true, actionsRead: 'ok' };
         window.CC.tasks.reconcile({ ...base, id: 'chk-why', agent: 'alead', title: 'Refund the late order', state: 'waiting', waitingAt: n, draft: 'A refund.', result: 'A refund.', autoWhy: 'a1: 45.00 USD is over the 30.00 USD limit of Small refunds', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shopify__refund_create', to: '#7', amount: 45, currency: 'USD', summary: 'Refund #7' }] });
@@ -1022,6 +1022,7 @@ else {
       return 'rules under Waiting with use · PAUSE and PAUSE ALL · the card says why it waits · the done row says "approved by rule Small refunds"';
     });
     await step('smoke: a draft blocked while drafting says so on its row and card; a routine blocked while running says so on its row (demo)', async () => { // STORE spec 0003: AC-5
+      await page.click('.tp-chip[data-f="all"]'); if (await page.evaluate(() => document.getElementById('rail').classList.contains('open'))) await page.keyboard.press('Escape'); // start from All, whatever the step before left
       await page.evaluate(n => { const base = { dept: 'emails', text: 'x', addedAt: n, by: 'routine', needsOk: true, actionsRead: 'ok', actions: [] };
         window.CC.tasks.reconcile({ ...base, id: 'chk-blk', agent: 'cmail', title: 'Reply to the client thread', state: 'waiting', waitingAt: n, draft: 'A reply.', result: 'A reply.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__send_message', why: 'a write tool', at: n }], autoWhy: 'the draft tried to write while drafting (send_message), so you look at it yourself' });
         window.CC.tasks.reconcile({ ...base, id: 'chk-rtn', agent: 'imail', title: 'Triage the internal inbox', state: 'done', doneAt: n, needsOk: false, result: 'Triaged.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__label_thread', why: 'a write tool', at: n }] }); }, Date.now());
@@ -1041,7 +1042,7 @@ else {
       await until(() => document.querySelectorAll('.tp-row.trig').length === 2);
       const rows = await page.evaluate(() => [...document.querySelectorAll('.tp-row.trig')].map(e => e.textContent.replace(/\s+/g, ' ')));
       if (!/SHOPIFY/.test(rows[0]) || !/chk\.myshopify\.com · checked 2 min ago · every 5 min · read-only/.test(rows[0]) || !/Answer the new return requests/.test(rows[1]) || !/3 of 10 today/.test(rows[1]) || !/2 held \(cap reached\)/.test(rows[1])) throw new Error('rows: ' + JSON.stringify(rows));
-      await page.click('.tp-row.trig[data-trig="returns"] [data-tact="pause"]'); await until(() => document.querySelector('.tp-row.trig[data-trig="returns"]')?.classList.contains('paused'));
+      await page.evaluate(() => document.querySelector('.tp-row.trig[data-trig="returns"] [data-tact="pause"]').click()); await until(() => document.querySelector('.tp-row.trig[data-trig="returns"]')?.classList.contains('paused'));
       if (!await page.evaluate(() => window.CC.tasks.triggers().triggers[0].paused === true)) throw new Error('PAUSE did not take');
       await page.evaluate(() => window.CC.tasks.setTriggers({ shopify: { on: true, shop: 'chk.myshopify.com', poll: 5, lastOk: null, problem: 'the app is not installed on the store yet' }, triggers: [] }));
       await until(() => /not installed/.test(document.querySelector('.tp-row.trig.head')?.textContent || ''));
