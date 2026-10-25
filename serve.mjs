@@ -54,6 +54,8 @@ import * as usage from './usage.mjs';
 import * as teams from './teams.mjs';
 import * as actions from './actions.mjs'; // STORE (24 Oct 2026): outbound action lists on drafts + the approve call gate (spec 0001)
 import * as approvals from './approvals.mjs'; // STORE (24 Oct 2026): auto approve rules (spec 0002)
+import * as shopify from './shopify.mjs'; // STORE (25 Oct 2026): the office's own read-only view of the store (spec 0004)
+import * as triggers from './triggers.mjs'; // STORE (25 Oct 2026): store events start trigger tasks (spec 0004)
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
 
@@ -277,7 +279,8 @@ async function run(task, feedback, mode) { // mode: undefined (a task from the b
   const index = vaultIndex();
   const read = relevantNotes(index, a.department, task.title + ' ' + task.text);
   const system = agentSystem(a, index, read);
-  const routineLine = task.routine ? `\nThis is a routine (${task.when}): it runs on the office's own clock and the owner is not at the keyboard. It is now ${new Date().toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${task.late ? `; this run is late, it was due ${new Date(task.due).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}. Do the work for now.`
+  const routineLine = task.trigger ? `\nThis task was started by events in the store (${task.when}); the owner is not at the keyboard. Work from the events listed in the request, one by one. It is now ${new Date().toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}.` // STORE spec 0004
+    : task.routine ? `\nThis is a routine (${task.when}): it runs on the office's own clock and the owner is not at the keyboard. It is now ${new Date().toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${task.late ? `; this run is late, it was due ${new Date(task.due).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}. Do the work for now.`
     : task.dueAt ? `\nThis task was scheduled in advance for ${new Date(task.dueAt).toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} and is running now; the owner is not at the keyboard${task.late ? ' and this run is late' : ''}. Do the work for now.` : '';
   const modeLine = modeLineFor(mode, task);
   const user = `Task: ${task.title}\nOwner's request: ${task.text}` + (task.plan?.length ? `\nAgreed plan: ${task.plan.join(' → ')}` : '') + routineLine + modeLine +
@@ -347,7 +350,7 @@ function writeNote(task) { // the deliverable becomes a note in the brain, linke
   fs.mkdirSync(NOTES_DIR, { recursive: true });
   const a = AGENTS.find(x => x.id === task.agent);
   const name = `${new Date(task.doneAt).toISOString().slice(0, 10)} ${slug(task.title)}`;
-  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && task.autoApproved ? '\n' + approvals.noteLines(task) : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
+  const body = `---\nagent: ${a.name}\ndepartment: ${DEPTS[a.department].name}\ntask: ${task.id}\ndone: ${new Date(task.doneAt).toISOString()}${task.used?.length ? '\ntools: ' + task.used.join(', ') : ''}${task.skills?.length ? '\nskills: ' + task.skills.join(', ') : ''}${task.routine ? '\nroutine: ' + task.when + (task.late ? ' (late)' : '') : ''}${task.trigger ? '\ntrigger: ' + task.trigger + ' · ' + task.when + ' · ' + (task.events || []).length + ' event' + ((task.events || []).length === 1 ? '' : 's') : ''}${task.modelUsed ? '\nmodel: ' + modelName(task.modelUsed) + (task.modelFrom && task.modelFrom !== 'office' ? ' (' + task.modelFrom + ')' : '') : ''}${task.effortUsed ? '\neffort: ' + task.effortUsed + (task.effortFrom && task.effortFrom !== 'model' ? ' (' + task.effortFrom + ')' : '') : ''}${task.approved ? '\napproved: ' + new Date(task.approvedAt).toISOString() : ''}${task.approved && task.autoApproved ? '\n' + approvals.noteLines(task) : ''}${task.approved && Array.isArray(task.actions) ? '\n' + actions.noteLine(task.actions) : ''}${task.team?.pieces?.length ? '\nteam: ' + task.team.pieces.map(p => nameOf(p.agent)).join(', ') : ''}\n---\n` +
     `# ${task.title}\n\n${task.result}\n\n${task.approved && Array.isArray(task.actions) ? actions.noteSection(task.actions, task) + '\n' : ''}${actions.runNote(task) ? actions.runNote(task) + '\n' : ''}---\nRead: ${(task.read || []).map(n => `[[${n}]]`).join(' · ') || '—'}\n` + teams.noteExtra(task.team, nameOf); // STORE spec 0001: what went out, per action
   fs.writeFileSync(path.join(NOTES_DIR, name + '.md'), body);
   return name;
@@ -465,6 +468,56 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
   console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : task.state === 'doing' ? '⚡' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : task.state === 'doing' ? 'sending by rule' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
   if (!approve && task.state === 'doing' && task.autoApproved) enqueue(() => runServerTask(task.id, { approve: true, strict: true })); // STORE spec 0002: the same gated run as APPROVE, strict
   return task;
+}
+/* ---------- STORE (spec 0004): Shopify event triggers — the office reads the store, events start trigger tasks ---------- */
+const SHOP = shopify.settings(cfg); for (const w of SHOP.problems) console.warn('shopify:', w);
+const TSTATE = triggers.loadState(DATA);
+let checking = false;
+const loadTriggers = () => triggers.load(BRAIN, AGENTS);
+function fireTrigger(t, events) { // one task for the whole batch, run like a routine draft
+  const task = { id: nid(), dept: t.dept, agent: t.agent, title: t.title, text: triggers.taskText(t, events), plan: [], eta: 15, why: '', state: 'next', addedAt: Date.now(), by: 'trigger', trigger: t.id, events: events.map(e => e.key), when: triggers.describe(t), needsOk: t.needsOk };
+  const list = load(); list.push(task); save(list);
+  console.log(`🛍 ${task.id} → ${task.agent}: ${task.title} (${events.length} event${events.length === 1 ? '' : 's'}, ${task.when})`);
+  enqueue(() => runServerTask(task.id));
+  return task;
+}
+async function checkStore({ runNow = null, force = false } = {}) {
+  if (!SHOP.on || checking || process.env.AO_NO_STORE === '1') return { skipped: true }; // AO_NO_STORE: RUN NOW too
+  const doc = loadTriggers(); if (!doc.triggers.length) return { skipped: true };
+  if (!force && Date.now() < TSTATE.backoffUntil) return { skipped: true };
+  checking = true; TSTATE.lastCheck = Date.now(); let fired = [];
+  try {
+    const sc = await shopify.scopes(SHOP);
+    if (sc.write.length) throw Object.assign(new Error(`the office's Shopify app has scopes that are not read-only (${sc.write.join(', ')}): remove them in the Dev Dashboard, release the version and approve it on the store`), { retry: false });
+    let orders = null, maxUpdated = null, variants = null;
+    if (doc.triggers.some(t => t.event !== 'stock_low')) {
+      orders = []; let after = null; const since = new Date(TSTATE.cursor ? Date.parse(TSTATE.cursor) - 2 * 60000 : Date.now()).toISOString();
+      for (let page = 0; page < 5; page++) { const d = await shopify.query(SHOP, triggers.ORDERS_Q(doc.triggers.some(t => t.customerText)), { q: `updated_at:>'${since}'`, after }); orders.push(...d.orders.nodes); if (!d.orders.pageInfo.hasNextPage) break; after = d.orders.pageInfo.endCursor; }
+      for (const o of orders) if (!maxUpdated || o.updatedAt > maxUpdated) maxUpdated = o.updatedAt;
+    }
+    const stockT = doc.triggers.filter(t => t.event === 'stock_low');
+    if (stockT.length) variants = (await shopify.query(SHOP, triggers.STOCK_Q, { q: `inventory_quantity:<=${Math.max(...stockT.map(t => t.below))}` })).productVariants.nodes;
+    const r = triggers.step({ triggers: doc.triggers, state: TSTATE, orders, variants, maxUpdated, runNow });
+    if (TSTATE.problem) console.log('🛍 shopify: back');
+    Object.assign(TSTATE, { lastOk: Date.now(), problem: null, fails: 0, backoffUntil: 0 });
+    if (r.first) console.log('🛍 store connected: the first check recorded where things stand and started nothing');
+    fired = r.fires.map(f => fireTrigger(f.trigger, f.events));
+  } catch (e) { // back off 5 → 15 → 30 → 60 min; a problem that will not go away by itself waits an hour; the cursor does not move
+    TSTATE.fails = (TSTATE.fails || 0) + 1; const mins = e.retry ? [5, 15, 30, 60][Math.min(TSTATE.fails - 1, 3)] : 60;
+    if (TSTATE.problem !== e.message) console.warn('🛍 shopify:', e.message);
+    Object.assign(TSTATE, { problem: e.message, backoffUntil: Date.now() + mins * 60000 });
+  } finally { triggers.saveState(DATA, TSTATE); checking = false; }
+  return { fired };
+}
+const triggersOut = () => { const d = loadTriggers(); return { triggers: d.triggers.map(t => ({ ...t, desc: triggers.describe(t), today: TSTATE.day === triggers.dayKey(Date.now()) ? (TSTATE.counts[t.id] || 0) : 0, held: (TSTATE.held[t.id] || []).length })), problems: [...SHOP.problems, ...d.problems], path: d.path,
+  shopify: { on: SHOP.on, shop: SHOP.shop, poll: SHOP.poll, lastCheck: TSTATE.lastCheck, lastOk: TSTATE.lastOk, problem: TSTATE.problem, connectedAt: TSTATE.cursor ? true : false }, stale: TSTATE.stale.slice(-5) }; };
+function triggersChat(a, t) { // a lead: "triggers" · "pause|resume … trigger"
+  if (leadOf(a.department).id !== a.id) return null;
+  if (/^\s*((store|shopify)\s+)?triggers\s*\??\s*$/i.test(t)) return { reply: triggers.listText(loadTriggers(), TSTATE) };
+  const cmd = /^\s*(pause|resume)\s+(?:the\s+)?(.+?)\s+trigger\s*[.!]?\s*$/i.exec(t); if (!cmd) return null;
+  const d = loadTriggers(), x = triggers.matchTrigger(d.triggers, cmd[2]); if (!x) return { reply: 'Which one? ' + triggers.listText(d, TSTATE) };
+  triggers.edit(BRAIN, doc => { const y = doc.triggers.find(z => z?.id === x.id); if (y) y.paused = /pause/i.test(cmd[1]); });
+  return { reply: /pause/i.test(cmd[1]) ? `Paused "${x.title}". Store events it would have started pass by until you resume it.` : `"${x.title}" is back on.` };
 }
 function tickRoutines() {
   let list; try { list = loadRoutines(); } catch (e) { console.warn('routines:', e.message); return; }
@@ -587,6 +640,18 @@ const server = http.createServer(async (req, res) => {
       if (b.effort !== undefined) patch.effort = normEffort(b.effort) || '';
       editRoutine(r.id, patch); return json(res, 200, { ok: true, routines: loadRoutines() });
     }
+    if (url.pathname === '/api/triggers' && req.method === 'GET') return json(res, 200, triggersOut()); // STORE spec 0004
+    const tm = url.pathname.match(/^\/api\/triggers\/([^/]+)(?:\/(pause|resume|run))?$/);
+    if (tm) {
+      const tid = (() => { try { return decodeURIComponent(tm[1]); } catch { return tm[1]; } })(), x = loadTriggers().triggers.find(y => y.id === tid);
+      if (!x) return json(res, 404, { error: 'no such trigger' });
+      if (req.method === 'DELETE' && !tm[2]) triggers.edit(BRAIN, doc => { doc.triggers = doc.triggers.filter(y => y?.id !== x.id); });
+      else if (req.method === 'POST' && (tm[2] === 'pause' || tm[2] === 'resume')) triggers.edit(BRAIN, doc => { const y = doc.triggers.find(z => z?.id === x.id); if (y) y.paused = tm[2] === 'pause'; });
+      else if (req.method === 'POST' && tm[2] === 'run') { const r = await checkStore({ runNow: x.id, force: true }); return json(res, 200, { ok: true, fired: (r.fired || []).map(t => t.id), ...triggersOut() }); } // RUN NOW: check now, start what is held past the cap
+      else return json(res, 405, { error: 'POST …/pause|resume|run or DELETE' });
+      console.log(`🛍 trigger ${x.id} ${req.method === 'DELETE' ? 'deleted' : tm[2] + 'd'}`);
+      return json(res, 200, { ok: true, ...triggersOut() });
+    }
     if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, approvalsOut()); // STORE spec 0002
     const am = url.pathname.match(/^\/api\/approvals\/([^/]+)(?:\/(pause|resume))?$/);
     if (am) {
@@ -672,6 +737,8 @@ const server = http.createServer(async (req, res) => {
       if (!text || !String(text).trim()) return json(res, 400, { error: 'empty message' });
       const a = AGENTS.find(x => x.id === agent); if (!a) return json(res, 400, { error: 'unknown agent' });
       if (!onboard.active(DATA, a.department)) { // V3.5: "every weekday at 8am, …" · "routines" · "pause …" · "run … now" — unless the lead is mid-interview
+        const tc = triggersChat(a, String(text).trim()); // STORE spec 0004: "triggers", "pause … trigger"
+        if (tc) return json(res, 200, { reply: tc.reply, read: [], tools: [], interview: false, triggers: true });
         const ac = await approvalsChat(a, String(text).trim()); // STORE spec 0002: auto approve rules, before routines ("pause … rule" is a rule)
         if (ac) return json(res, 200, { reply: ac.reply, read: [], tools: [], interview: false, approvals: true });
         const rc = await routinesChat(a, String(text).trim());
@@ -697,6 +764,8 @@ server.listen(cfg.port, () => {
   const rl = loadRoutines(); const nx = rl.filter(r => !r.paused && r.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0];
   console.log(`  routines: ${rl.length} loaded${rl.some(r => r.paused) ? ' (' + rl.filter(r => r.paused).length + ' paused)' : ''}${nx ? ' · next ' + untilText(nx.nextAt) + ' ' + nx.title.toUpperCase() + ' (' + nx.agent + ')' : ''} · ${rlist.path}`);
   setInterval(tickRoutines, 20000); tickRoutines(); // the clock: every 20 s; the first tick catches up anything missed while the office was off (once, marked LATE)
+  if (SHOP.on && process.env.AO_NO_STORE === '1') console.log('  store: polling off (AO_NO_STORE=1)'); // npm run check starts the office this way: a check never reads the store or starts trigger tasks
+  else if (SHOP.on) { setInterval(() => checkStore(), SHOP.poll * 60000); setTimeout(() => checkStore(), 5000); console.log(`  store: ${SHOP.shop} · checked every ${SHOP.poll} min for ${loadTriggers().triggers.length} trigger(s) (read-only)`); } // STORE spec 0004
   console.log(`  agents: 35 (${roster.customised} customised${roster.briefed ? ', ' + roster.briefed + ' briefed' : ''}${roster.files.length ? ' via ' + roster.files.join(' + ') : ''})   tools: ${backend === 'claude-cli' ? 'connected MCP servers' + (cfg.tools?.web === false ? '' : ' + web') + (mcp.browserOn() ? ' + the owner\'s Chrome (' + (mcp.browserState().installed ? 'extension paired' + (mcp.browserState().device ? ': ' + mcp.browserState().device : '') : 'extension NOT paired — run `claude --chrome` once') + ')' : '') : 'none on the API backend'}`);
   console.log(`  teams: ${TEAMS.enabled ? 'on — TEAM in the bar or "as a team" in the sentence; the lead splits it across up to ' + TEAMS.max + ' desks' : 'off (teams.enabled in office.config.json)'}`);
   const sk = skills.summary(); const setup = setupMap(); const notYet = DEPT_KEYS.filter(k => !setup[k]);

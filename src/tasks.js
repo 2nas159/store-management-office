@@ -558,7 +558,8 @@ export function initTasks(ctx) {
     if (!live || polling) return; polling = true;
     if (usageDue || ++pollN % 5 === 0) { usageDue = false; pollUsage(); }
     try {
-      const [rl, tl, al] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json()), fetch(API + '/approvals').then(r => r.json()).catch(() => null)]);
+      const [rl, tl, al, trg] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json()), fetch(API + '/approvals').then(r => r.json()).catch(() => null), fetch(API + '/triggers').then(r => r.json()).catch(() => null)]);
+      if (trg && Array.isArray(trg.triggers)) setTriggers(trg); // STORE spec 0004
       if (Array.isArray(rl.routines)) setRoutines(rl.routines);
       if (al && Array.isArray(al.rules)) setApprovals(al);
       if (Array.isArray(tl)) for (const st of tl) reconcile(st);
@@ -570,11 +571,11 @@ export function initTasks(ctx) {
     if (!agentOf(st.agent)) return;
     let t = tasks.find(x => x.live && x.sid === st.id);
     if (!t) {
-      t = mk({ agent: st.agent, title: st.title, text: st.text, plan: st.plan, by: st.by === 'routine' ? 'routine' : 'you', live: true, srv: !!st.routine, sid: st.id,
-        routine: st.routine, when: st.when, late: !!st.late, due: st.due, needsOk: !!st.needsOk, addedAt: st.addedAt, changedAt: st.addedAt, last: 'added',
+      t = mk({ agent: st.agent, title: st.title, text: st.text, plan: st.plan, by: st.by === 'routine' || st.by === 'trigger' ? 'routine' : 'you', live: true, srv: !!st.routine || !!st.trigger, sid: st.id,
+        routine: st.routine, trigger: st.trigger, when: st.when, late: !!st.late, due: st.due, needsOk: !!st.needsOk, addedAt: st.addedAt, changedAt: st.addedAt, last: 'added',
         model: st.model, modelUsed: st.modelUsed || st.model || undefined, modelFrom: st.modelFrom || (st.model ? 'task' : undefined), effort: st.effort, effortUsed: st.effortUsed, effortFrom: st.effortFrom });
       if (st.state === 'scheduled') { t.state = 'scheduled'; t.dueAt = st.dueAt; t.needsOk = !!st.needsOk; }
-      else if (st.state !== 'done') { spawnEmote(R[t.agent], st.routine ? '⏱' : st.dueAt ? '⏱' : '📋'); if (st.routine) feedPush(R[t.agent], '⏱', `Routine fired: ${t.title}${t.late ? ' (late — was due ' + timeStr(t.due) + ')' : ''}`); else if (st.dueAt) feedPush(R[t.agent], '⏱', `Scheduled task fired: ${t.title}`); }
+      else if (st.state !== 'done') { spawnEmote(R[t.agent], st.routine ? '⏱' : st.dueAt ? '⏱' : '📋'); if (st.routine) feedPush(R[t.agent], '⏱', `Routine fired: ${t.title}${t.late ? ' (late — was due ' + timeStr(t.due) + ')' : ''}`); else if (st.trigger) feedPush(R[t.agent], '🛍', `Store event: ${t.title}`); else if (st.dueAt) feedPush(R[t.agent], '⏱', `Scheduled task fired: ${t.title}`); }
       touch(t, 'added');
     }
     apply(t, st);
@@ -746,11 +747,11 @@ export function initTasks(ctx) {
     const who = (f && f !== 'brain') ? a.name : `${a.name} · ${DEPTS[t.dept].short}`;
     switch (t.state) {
       case 'next': {
-        const src = t.piece ? `team piece from ${agentOf(t.leadId)?.name || 'the lead'}` : t.routine ? `routine · ${t.when}${t.late ? ' · <span class="tp-late">late · was due ' + timeStr(t.due) + '</span>' : ''}` : t.by === 'you' ? (t.live ? 'added by you · live' : 'added by you') : t.last === 'handoff' && t.from ? `from ${agentOf(t.from).name}` : t.revised ? 'sent back to revise' : 'from the Brain';
+        const src = t.piece ? `team piece from ${agentOf(t.leadId)?.name || 'the lead'}` : t.trigger ? `🛍 store trigger · ${esc(t.when || '')}` : t.routine ? `routine · ${t.when}${t.late ? ' · <span class="tp-late">late · was due ' + timeStr(t.due) + '</span>' : ''}` : t.by === 'you' ? (t.live ? 'added by you · live' : 'added by you') : t.last === 'handoff' && t.from ? `from ${agentOf(t.from).name}` : t.revised ? 'sent back to revise' : 'from the Brain';
         const w = now - t.addedAt;
         return `${who} · ${w < 60000 ? 'just added' : 'waiting ' + span(w)} · ${src}${teamBit(t)}${modelBit(t)}`;
       }
-      case 'doing': return `${who}${t.live ? (t.approved === undefined && t.draftAt ? ' · sending with Claude' : t.team?.members?.length ? ' · leading the team with Claude' : ' · working with Claude') : t.agent === 'vid' ? ' · rendering' : t.teamHold ? ' · waiting on the pieces' : ''}${t.routine ? ' · routine' : ''}${teamBit(t)}${modelBit(t)}`;
+      case 'doing': return `${who}${t.live ? (t.approved === undefined && t.draftAt ? ' · sending with Claude' : t.team?.members?.length ? ' · leading the team with Claude' : ' · working with Claude') : t.agent === 'vid' ? ' · rendering' : t.teamHold ? ' · waiting on the pieces' : ''}${t.trigger ? ' · 🛍 store trigger' : t.routine ? ' · routine' : ''}${teamBit(t)}${modelBit(t)}`;
       case 'waiting': return `<span class="tp-amber">waiting ${span(now - t.changedAt)} for your tick</span> · ${who}${t.routine ? ' · routine draft' : ''}${t.live && t.draftAt ? ' · ' + (readOf(t).ok ? esc(actSummary(t.actions)) : '<span class="tp-amber">actions unreadable</span>') : ''}${blockedBit(t, 'drafting')}${teamBit(t)}${modelBit(t)}`; // STORE spec 0001: "3 actions · 912.00 USD"; 0003: blocked while drafting
       case 'scheduled': return `${who} · runs ${esc(untilText(t.dueAt))} · ${new Date(t.dueAt).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} ${timeStr(t.dueAt)}${t.needsOk ? ' · waits for your OK' : ''}${teamBit(t)}${modelBit(t)}`;
       case 'done': return `${who} · done ${timeStr(t.doneAt)}${t.approved ? '' : blockedBit(t, 'running')}${t.autoApproved ? ` · <span class="tp-rule">⚡ approved by rule ${esc(ruleTitles(t))}</span>` : t.approved ? (t.live ? ' · sent after your OK' : ' · approved') : ''}${t.late ? ' · <span class="tp-late">ran late</span>' : ''}${teamBit(t)}${modelBit(t)}${t.live ? (t.error ? ' · <span class="tp-amber">failed</span>' : ' · <span class="tp-res">result ready →</span>') : ''}`;
@@ -764,6 +765,23 @@ export function initTasks(ctx) {
     return `<div class="tp-row ${t.state}${t.last === 'handoff' ? ' handoff' : ''}${t.live ? ' live' : ''}${t.piece ? ' piece' : ''}" data-id="${t.id}" data-dept="${t.dept}" data-agent="${t.agent}">
       ${chip}<div class="tp-body"><div class="tp-t">${t.routine || t.state === 'scheduled' ? '⏱ ' : ''}${t.team?.members?.length ? '⚑ ' : ''}${esc(t.title)}</div><div class="tp-m">${metaFor(t)}</div>${bar}</div>
       <span class="tp-ago" data-ago="${t.id}">${span(Date.now() - t.changedAt)}</span></div>`;
+  }
+  // STORE (spec 0004): the store triggers and the Shopify line, under the Scheduled chip
+  let trigDoc = { triggers: [], shopify: null };
+  function setTriggers(doc) { const was = JSON.stringify(trigDoc); trigDoc = { triggers: doc.triggers || [], shopify: doc.shopify || null, problems: doc.problems || [] }; if (JSON.stringify(trigDoc) !== was && filter === 'sched') render(true); }
+  const ago = ms => ms ? span(Date.now() - ms) + ' ago' : 'not yet';
+  function triggersHTML() {
+    const s = trigDoc.shopify, f = getFocused(), list = trigDoc.triggers.filter(t => !f || f === 'brain' || t.dept === f);
+    if (!s?.on && !list.length) return '';
+    const line = !s?.on ? 'not connected: add "shopify" to office.config.local.json' : s.problem ? `<span class="tp-amber">${esc(s.problem)}</span>` : `${esc(s.shop)} · checked ${ago(s.lastOk)} · every ${s.poll} min · read-only`;
+    return `<div class="tp-row sched trig head" data-trig="*"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">SHOPIFY</div><div class="tp-m">${line}</div></div></div>` +
+      list.map(t => `<div class="tp-row sched trig${t.paused ? ' paused' : ''}" data-trig="${esc(t.id)}" data-dept="${t.dept}"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">${esc(t.title)}</div><div class="tp-m">${esc(t.desc)} · ${agentOf(t.agent)?.name || esc(t.agent)} · ${t.today} of ${t.dailyCount} today${t.held ? ` · <span class="tp-amber">${t.held} held (cap reached)</span>` : ''}${t.needsOk ? ' · waits for your OK' : ' · read-only'}</div>
+      <div class="tp-act"><button class="run" data-tact="run">RUN NOW</button><button data-tact="${t.paused ? 'resume' : 'pause'}">${t.paused ? 'RESUME' : 'PAUSE'}</button><button data-tact="delete">DELETE</button></div></div><span class="tp-ago">${t.paused ? 'PAUSED' : 'ON'}</span></div>`).join('');
+  }
+  async function trigAct(id, act) {
+    if (!live) { const t = trigDoc.triggers.find(x => x.id === id); if (t && act !== 'run') { if (act === 'delete') trigDoc.triggers = trigDoc.triggers.filter(x => x !== t); else t.paused = act === 'pause'; render(true); } return; }
+    const res = act === 'delete' ? await fetch(`${API}/triggers/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(r => r.json()).catch(() => null) : await post(`/triggers/${encodeURIComponent(id)}/${act}`);
+    if (res && Array.isArray(res.triggers)) setTriggers(res); await poll(); render(true);
   }
   function rowHTMLr(r) { // a SCHEDULED row: the routine itself, with its countdown and its buttons
     const a = agentOf(r.agent);
@@ -821,9 +839,10 @@ export function initTasks(ctx) {
       .sort((a, b) => b.changedAt - a.changedAt).slice(0, 60);
     const before = structural ? {} : rects();
     P_.rows.innerHTML = filter === 'sched'
-      ? ((scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
+      ? ((triggersHTML() + scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
       : (filter === 'waiting' ? rulesHTML() : '') + (list.map(rowHTMLp).join('') || `<div class="tp-empty">Nothing here right now.</div>`); // STORE spec 0002: the rules head the Waiting list
     renderNext();
+    P_.rows.querySelectorAll('[data-tact]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); trigAct(b.closest('[data-trig]').dataset.trig, b.dataset.tact); })); // STORE spec 0004
     P_.rows.querySelectorAll('[data-ract]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); ruleAct(b.closest('[data-rule]').dataset.rule, b.dataset.ract); }));
     P_.rows.querySelectorAll('.tp-act button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const row = b.closest('.tp-row'); if (row.dataset.rid) rtAct(row.dataset.rid, b.dataset.act); else if (b.dataset.act === 'cancel') cancelScheduled(tasks.find(t => String(t.id) === row.dataset.id)); else if (b.dataset.act === 'calendar' && calendar) calendar.open(); }));
     P_.rows.querySelectorAll('.tp-row.waiting').forEach(n => n.addEventListener('click', () => zoomToApproval(n.dataset.dept)));
@@ -1063,5 +1082,5 @@ export function initTasks(ctx) {
   const calendar = initCalendar({ tasks, routines, agentOf, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, create: createScheduled, createRoutine: createRoutineAt, cancelTask: cancelScheduled, rtAct, openAgent: (id, tab) => openAgent && openAgent(id, tab), esc, isLive: () => live, officeModel: () => officeModel, MODEL_KEYS, modelName, business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
   return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, createScheduled, cancelScheduled,
            handleChat, addTask, revise, rowHTML, setDept, tasks, panelWidth: () => panel.offsetWidth, isLive: () => live,
-           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
+           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, setTriggers, triggers: () => trigDoc, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
 }

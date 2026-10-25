@@ -102,7 +102,7 @@ const glob = (pat, s) => new RegExp('^' + pat.split('*').map(x => x.replace(/[.+
 export function fits(a, r, task) {
   if (!r.kinds.includes(a.kind)) return { why: 'kind' };
   if (r.depts.length && !r.depts.includes(task.dept)) return { why: 'scope' };
-  if (r.routines.length && !r.routines.includes(task.routine)) return { why: 'scope' };
+  if (r.routines.length && !r.routines.includes(task.routine) && !(task.trigger && r.routines.includes(task.trigger))) return { why: 'scope' }; // spec 0004: a trigger id scopes a rule too
   if (r.tools.length && !r.tools.includes(a.tool)) return { why: `${r.title} does not allow ${a.tool}` };
   if (r.to.length && !r.to.some(p => glob(p, a.to))) return { why: `${r.title} does not cover ${a.to}` };
   if (a.amount != null) {

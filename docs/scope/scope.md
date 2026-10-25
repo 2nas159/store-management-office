@@ -108,14 +108,14 @@ spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, 
 
 ### 6. Shopify event triggers · GA
 A new order, low stock, a return request, a cancellation or a refund in the store starts the right draft within minutes, through the same read-only gate, action list and rules as routines. The office polls the Admin API with its own read-only app; customer free text stays out of the prompt by default.
-spec [0004](../specs/0004-shopify-event-triggers.md)
+spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `triggers.mjs`, `serve.mjs`, `src/tasks.js`, `check.mjs`
 **Done when:** each of the five events, set in triggers.json, starts one batched task per check within its daily cap; nothing starts twice or on the first check; the office's Shopify access is read-only and checked; a problem with Shopify shows in plain words in the panel.
 - [x] Design it (spec): `/architect shopify event triggers`
-- [ ] Build it: `/develop shopify event triggers`
-  - [ ] Facts and the client: token flow, read scopes, API version confirmed; shopify.mjs (AC-1, AC-7, AC-9)
-  - [ ] Thread: return requests end to end, batching, cap, structured EVENTS text (AC-2 to AC-6)
-  - [ ] The other events: orders created, cancelled, refunded; low stock; first check; catch-up (AC-2)
-  - [ ] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)
+- [x] Build it: `/develop shopify event triggers`
+  - [x] Facts and the client: token flow, read scopes, API version confirmed; shopify.mjs (AC-1, AC-7, AC-9) — the GraphQL fields are confirmed against the live store by `node triggers.mjs` once the app is installed (open)
+  - [x] Thread: return requests end to end, batching, cap, structured EVENTS text (AC-2 to AC-6)
+  - [x] The other events: orders created, cancelled, refunded; low stock; first check; catch-up (AC-2)
+  - [x] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)
 - [ ] Verify it: `/check verify shopify event triggers`
 - [ ] Test it: `/test shopify event triggers`
 - [ ] Review it: `/check review shopify event triggers`

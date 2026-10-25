@@ -255,6 +255,16 @@ by rule. So anything outbound goes only through APPROVE or a rule. `node toolcla
 every tool's class; correct one with `"gate": { "read": [...], "write": [...] }` in
 `office.config.json`.
 
+Store triggers start work when something happens in your Shopify store: a new order, a
+cancellation, a refund, a return request, or a variant's stock at or below a line you set. The
+office checks every few minutes with its own read-only app (a Dev Dashboard app with read scopes;
+its Client ID and Secret go in `office.config.local.json`, never the shared file). A trigger in
+`<brain>/Agents Office/triggers.json` says which desk does what; everything one check finds
+becomes one task, capped per day, run like a routine draft. Customer-written text stays out of
+the task unless the trigger opts in. The first check records where the store stands and starts
+nothing. `node triggers.mjs` tests the connection without starting anything; the triggers and
+the store's status show under the **Scheduled** chip.
+
 The clock lives in the server: `npm start` has to be running, but the page does not have to be
 open. A run missed while the machine was asleep or the office was off is caught up once when it
 comes back, marked LATE; never more than one catch-up per routine. Every firing is a line in the
