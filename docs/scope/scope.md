@@ -23,6 +23,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 4 | Auto approve rules | Slice 3 | in-progress |
 | 5 | Gate the draft run | Slice 3 | in-progress |
 | 6 | Shopify event triggers | Slice 4 | in-progress |
+| 7 | The team on Telegram | Slice 5 | in-progress |
 
 ## Already there
 
@@ -120,6 +121,23 @@ spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `
 - [ ] Test it: `/test shopify event triggers`
 - [ ] Review it: `/check review shopify event triggers`
 - [ ] Document it: `/document shopify event triggers`
+
+## Slice 5: Run it from your phone
+
+### 7. The team on Telegram · GA
+Eight Telegram bots: a CEO who runs goals across departments, a secretary who collects every approval and runs your day (brief, calendar, reminders, admin, inbox), and the six department leads as their own contacts. The office connects out, so nothing is exposed; only your paired Telegram account can command them. Approving can move money, so it gets the full review.
+spec [0005](../specs/0005-telegram-team.md)
+**Done when:** from Telegram the owner can approve and reject drafts (a second tap above the confirm amount), talk to each lead and give it tasks, get the morning brief and reminders, manage rules, routines and triggers by sentence, and give the CEO a goal that runs across departments and reports back; nobody else can command the bots.
+- [x] Design it (spec): `/architect the team on telegram`
+- [ ] Build it: `/develop the team on telegram`
+  - [ ] Thread: the client, pairing and the lock; the secretary pushes approvals with buttons (AC-1, AC-2, AC-4, AC-9)
+  - [ ] Lead bots: chat, /task, results and store events to the right lead (AC-3)
+  - [ ] The secretary's day: morning brief, reminders, calendar, inbox triage, admin with triggers from chat (AC-5)
+  - [ ] The CEO: goals across departments, the weekly brief, the boardroom (AC-6, AC-7, AC-8)
+- [ ] Verify it: `/check verify the team on telegram`
+- [ ] Test it: `/test the team on telegram`
+- [ ] Review it: `/check review the team on telegram`
+- [ ] Document it: `/document the team on telegram`
 
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
