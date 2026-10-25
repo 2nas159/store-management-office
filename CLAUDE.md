@@ -154,13 +154,29 @@ The office never writes to Shopify itself; the access must be read-only (`read_o
 
 After writing: run `npm run check`, then tell the owner the trigger in words (the event, the desk, the cap, whether it waits for their OK) and that it shows under the **Scheduled** chip with PAUSE and RUN NOW. A trigger takes effect on the next check; no restart. A lead in chat answers "triggers" and "pause … trigger".
 
+## The team on Telegram (store fork, spec 0005)
+
+Eight Telegram bots talk for the office: the **secretary** (every approval with APPROVE / REJECT, the morning brief, reminders, calendar, inbox, office admin), the **CEO** (goals across departments, the weekly brief) and the six **department leads** (chat as on the page, `/task …`, results back in their chat). The office connects out (long polling); only the owner's paired Telegram account gets an answer.
+
+**Setup:** the owner creates the bots in @BotFather and puts the tokens in `office.config.local.json` — never `office.config.json`:
+
+```json
+"telegram": { "bots": { "secretary": "…", "ceo": "…", "emails": "…", "sales": "…", "marketing": "…", "ops": "…", "fin": "…", "delivery": "…" },
+  "confirmAbove": 100, "morning": "08:00", "weekly": { "days": [1], "at": "08:30" },
+  "roles": { "ceo": { "name": "CEO", "brief": "…", "model": "opus" }, "secretary": { "name": "Secretary", "brief": "…" } } }
+```
+
+Any subset of bots works (a missing lead is reached with "@sales …" through the secretary or the CEO). `node telegram.mjs` tests the tokens. On start the office prints a six-digit code; the owner sends `/start <code>` to any bot to pair. `/unpair` resets it; `/boardroom` in a group with the bots makes it the boardroom (a bot answers there only when mentioned). Five wrong pairing codes void the code. Run state: `data/telegram.json` (the pairing; delete it to unpair), `data/goals.json`, `data/reminders.json`.
+
+When the owner asks to change a role's voice ("make the CEO more direct", "the secretary should brief me at 7"), edit `telegram.roles` (`brief`, `name`, `model`) or `morning` / `weekly` in the local config. `confirmAbove` is the amount above which APPROVE asks for a second tap; never raise it unless the owner says so. Never put a token anywhere but the local file, and never print one. Changes take effect on restart (`npm start`).
+
 ## A task for a date (the calendar)
 
 When the owner says "on Friday, …", "next Tuesday at 10, …", "on the 5th, …" for a one-off (not "every"), that is a **scheduled task**, not a routine. The office does these itself: the owner clicks the day in the calendar (P), or the page posts `{ "dept", "text", "at": <ms or ISO> }` to `/api/tasks`. There is no file to write for them (they live in `data/tasks.json`, state `scheduled`, fired by the server's clock); tell the owner to press P and click the day, and say what to type.
 
 ## Changing the connectors
 
-The top bar shows the MCP servers **this machine's Claude Code** is connected to (`claude mcp list`). To add one: `claude mcp add …` or connect it in claude.ai; the office picks it up on restart. To decide what the agents may call, edit `office.config.json` (or `office.config.local.json`):
+The top bar shows the MCP servers **this machine's Claude Code** is connected to (`claude mcp list`): at most 10 logos and 5 per department, the rest named under **+N** (`TOP_MAX`, `DOCK_MAX` in `src/connectors.js`; an agent's `tools` list moves a connector up for its department). The limit is only what is drawn; the agents get every allowed server either way. To add one: `claude mcp add …` or connect it in claude.ai; the office picks it up on restart. To decide what the agents may call, edit `office.config.json` (or `office.config.local.json`):
 
 ```json
 "mcp": {

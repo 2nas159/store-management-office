@@ -795,6 +795,230 @@ await step('triggers: customer-written text stays out of the task unless the tri
   return 'note and typed reasons left out · reason codes kept · opted in: fenced, a ``` in it cannot break out · stock 4 → once, 3 → quiet, recovered, 4 → again';
 });
 
+/* ---------- 1j. the team on Telegram (STORE, spec 0005) — a fake Telegram, no network ---------- */
+const TOK = r => `${100000 + ['secretary', 'ceo', 'emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'].indexOf(r)}:AAH${r.padEnd(30, 'x')}`;
+async function teamHarness({ asks = [], runs = [], tasks = [], brain = null } = {}) { // a team on fake bots, with a fake office behind it
+  const tg = await import('./telegram.mjs'); const { createTeam } = await import('./team.mjs'); const { loadRoster } = await import('./roster.mjs'); const { DEPTS } = await import('./src/data.js'); const os = await import('node:os');
+  const A = await import('./actions.mjs'), AP = await import('./approvals.mjs'), TR = await import('./triggers.mjs'), M = await import('./meter.mjs'), { fromRun } = await import('./src/tokens.js');
+  const spend = () => M.charge(fromRun({ input_tokens: 1000, cache_read_input_tokens: 4000, output_tokens: 200 })); // every fake Claude run costs 5.2k tokens
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-team-')), brainPath = brain || path.join(dir, 'brain'); fs.mkdirSync(path.join(brainPath, 'Agents Office'), { recursive: true });
+  const AGENTS = loadRoster().agents, sent = [], calls = []; let clock = Date.parse('2026-10-26T07:00:00'), msg = 1;
+  const roleOf = token => ['secretary', 'ceo', 'emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'].find(r => TOK(r) === token);
+  const fake = token => { const role = roleOf(token); return { me: async () => ({ username: role + '_bot' }), updates: async () => [],
+    send: async (chat, text, opts = {}) => { sent.push({ role, kind: 'send', chat, text, buttons: (opts.buttons || []).flat().map(b => b.data), labels: (opts.buttons || []).flat().map(b => b.text) }); return { chat: { id: chat }, message_id: msg++ }; },
+    document: async (chat, name, content) => { sent.push({ role, kind: 'doc', chat, name, text: content }); return { chat: { id: chat }, message_id: msg++ }; },
+    edit: async (chat, id, text, opts = {}) => { sent.push({ role, kind: 'edit', chat, id, text, buttons: (opts.buttons || []).flat().map(b => b.data), labels: (opts.buttons || []).flat().map(b => b.text) }); },
+    answer: async (id, text) => { sent.push({ role, kind: 'answer', text: text || '' }); } }; };
+  const store = new Map(tasks.map(t => [t.id, t])); let seq = 1;
+  const ctx = { cfg: { name: 'Test Co', currency: 'USD' }, tg: tg.settings({ telegram: { bots: Object.fromEntries(['secretary', 'ceo', 'sales', 'delivery', 'ops'].map(r => [r, TOK(r)])), confirmAbove: 100 } }), dataDir: path.join(dir, 'data'), brainPath, AGENTS, DEPTS,
+    leadOf: d => AGENTS.find(a => a.department === d && a.lead), actions: A, approvals: AP, triggers: TR,
+    measure: M.measure, ask: async () => { calls.push('ask'); spend(); const a = asks.shift(); if (a === undefined) throw new Error('no answer'); return typeof a === 'string' ? a : JSON.stringify(a); },
+    tasks: () => [...store.values()], task: id => store.get(id),
+    addTask: async o => { const t = { id: 'T' + seq++, state: 'next', title: o.title || o.text.slice(0, 40), agent: AGENTS.find(a => a.department === o.dept && a.lead).id, ...o }; store.set(t.id, t); calls.push(['addTask', o]); return t; },
+    approve: async id => { calls.push(['approve', id]); const t = store.get(id); t.state = 'doing'; return { ok: true, state: 'doing' }; }, reject: async (id, note) => { calls.push(['reject', id, note]); store.get(id).state = 'doing'; return { ok: true }; },
+    leadChat: async (a, text) => { calls.push(['leadChat', a.id, text]); return `${a.name} here: ${text}`; },
+    run: async ({ gated, user }) => { calls.push(['run', gated, user]); spend(); return { text: runs.length ? String(runs.shift()) : 'nothing', runDenied: [] }; }, // Claude runs with tools (briefs, free chat) answer from their own list
+    notes: () => '', toolsText: () => 'TOOLS', makeRoutine: async o => { calls.push(['makeRoutine', o]); return { routine: { desc: 'Mondays · 09:00', nextAt: clock + 864e5 } }; },
+    parseWhen: (await import('./src/when.js')).parseWhen, describeWhen: (await import('./src/when.js')).describe, triggerState: () => ({ counts: {}, held: {} }), store: () => null, log: () => {} };
+  const team = createTeam(ctx, { clientFor: fake, now: () => clock, polling: false });
+  let up = 1; const owner = 4242;
+  const msgFrom = (role, text, from = owner, chat = { id: from, type: 'private' }) => team.handle(role, { update_id: up++, message: { text, from: { id: from, first_name: 'Omer' }, chat } });
+  const tap = (role, data, from = owner, onMsg) => team.handle(role, { update_id: up++, callback_query: { id: 'q' + up, data, from: { id: from }, ...(onMsg ? { message: { message_id: onMsg } } : {}) } }); // onMsg: the message the button sat on
+  return { team, ctx, sent, calls, store, msgFrom, tap, owner, dir, setClock: t => { clock = t; }, clock: () => clock, last: role => [...sent].reverse().find(s => s.kind !== 'answer' && (!role || s.role === role)), answers: () => sent.filter(s => s.kind === 'answer').map(s => s.text), done: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+await step('telegram: bot tokens only from the local file; a stranger never gets an answer; a one-time code pairs the owner', async () => { // AC-1, AC-2
+  const tg = await import('./telegram.mjs');
+  const s = tg.settings({ telegram: { bots: { secretary: TOK('secretary'), cfo: TOK('ceo'), sales: 'not-a-token' }, confirmAbove: -5 } });
+  if (Object.keys(s.bots).join() !== 'secretary' || !s.problems.some(p => /"cfo" is not a role/.test(p)) || !s.problems.some(p => /sales does not look like a bot token/.test(p)) || !s.problems.some(p => /confirmAbove/.test(p))) throw new Error('settings: ' + JSON.stringify(s));
+  const shared = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'office.config.json'), 'utf8')).telegram?.bots || {}; } catch { return {}; } })();
+  if (Object.keys(shared).length) throw new Error('bot tokens are in office.config.json, which git shares: move them to office.config.local.json');
+  const h = await teamHarness();
+  try {
+    const code = h.team._code(); if (!/^\d{6}$/.test(code)) throw new Error('no pairing code');
+    await h.msgFrom('secretary', '/start 000000', 999); await h.msgFrom('ceo', 'hello', 999);
+    if (h.sent.length) throw new Error('a stranger got an answer');
+    await h.msgFrom('sales', '/start ' + code); if (!h.team.status().paired || !/Paired/.test(h.last('sales').text)) throw new Error('the code did not pair');
+    const n = h.sent.length; await h.msgFrom('secretary', '/start ' + code, 777); await h.msgFrom('secretary', 'approve everything', 777);
+    if (h.sent.length !== n || h.team.status().owner !== 'Omer') throw new Error('someone else got in after pairing');
+    await h.msgFrom('ceo', 'hi', h.owner, { id: -100, type: 'group' }); if (h.sent.length !== n) throw new Error('an unpaired group got an answer');
+    await h.msgFrom('ceo', '/boardroom', h.owner, { id: -100, type: 'group' }); if (!h.team.state.group) throw new Error('/boardroom from the owner did not pair the group');
+    return `code ${code.replace(/\d/g, '•')} pairs once · a stranger, a second user and an unpaired group get nothing · /boardroom pairs the group`;
+  } finally { h.done(); }
+});
+await step('telegram: long text is split, very long text goes as a document, a 429 is waited out', async () => { // AC-9
+  const tg = await import('./telegram.mjs'); const sends = []; let first = true;
+  const f = async (url, o) => { const m = url.split('/').pop(); if (m === 'sendMessage' && first) { first = false; return new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 0.01 } }), { status: 429 }); } sends.push({ m, body: o.body instanceof FormData ? 'form' : JSON.parse(o.body) }); return new Response(JSON.stringify({ ok: true, result: { message_id: sends.length, chat: { id: 1 } } }), { status: 200 }); };
+  const b = tg.client(TOK('secretary'), { fetchImpl: f });
+  await b.send(1, ('line of text\n').repeat(700)); // 9,100 chars → 3 messages
+  if (sends.filter(s => s.m === 'sendMessage').length !== 3 || sends.some(s => s.m === 'sendMessage' && s.body.text.length > 3500)) throw new Error('split: ' + sends.map(s => s.m + ' ' + (s.body.text || '').length));
+  await b.send(1, 'x'.repeat(12000), { name: 'big.md' }); if (sends.at(-1).m !== 'sendDocument') throw new Error('a very long text was not sent as a document');
+  await b.send(1, 'buttons', { buttons: [[{ text: 'APPROVE', data: 'a:' + 'x'.repeat(80) }]] }); if (sends.at(-1).body.reply_markup.inline_keyboard[0][0].callback_data.length !== 64) throw new Error('callback data is not cut to Telegram\'s 64 bytes');
+  return '9,100 chars → 3 messages under 3,500 · 12,000 → a document · 429 waited out · callback data ≤ 64';
+});
+await step('telegram: the secretary\'s approval card — a second tap above the amount, already handled, locked when unreadable, reject takes the next message as the note', async () => { // AC-4
+  const big = { id: 'W1', dept: 'delivery', agent: 'dlead', title: 'Refund the broken order', state: 'waiting', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'refund', tool: 'mcp__shop__refund', to: '#1042', amount: 912, currency: 'USD', summary: 'Refund #1042 in full' }], draft: 'The draft.' };
+  const bad = { id: 'W2', dept: 'sales', agent: 'lexi', title: 'Send the offer', state: 'waiting', actionsRead: 'unreadable', actionsWhy: 'action 1: refund has no amount', actions: [], draft: 'x' };
+  const small = { id: 'W3', dept: 'delivery', agent: 'dlead', title: 'Reply to Ana', state: 'waiting', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'reply', tool: 'mcp__gmail__send', to: 'ana@x.co', summary: 'Reply to Ana' }], draft: 'x' };
+  const h = await teamHarness({ tasks: [big, bad, small] });
+  try {
+    await h.msgFrom('secretary', '/start ' + h.team._code());
+    await h.team.notify(big); const card = h.last('secretary');
+    if (!/⏸ Refund the broken order/.test(card.text) || !/refund · to #1042 · 912\.00 USD — Refund #1042 in full/.test(card.text) || card.buttons.join() !== 'a:W1,r:W1,d:W1') throw new Error('card: ' + JSON.stringify(card));
+    await h.tap('secretary', 'a:W1'); const conf = h.last('secretary');
+    if (conf.kind !== 'edit' || !/Send 912\.00 USD\?/.test(conf.text) || conf.buttons.join() !== 'c:W1,x:W1' || h.calls.some(c => c[0] === 'approve')) throw new Error('no second tap above 100: ' + JSON.stringify(conf));
+    await h.tap('secretary', 'c:W1'); if (!h.calls.some(c => c[0] === 'approve' && c[1] === 'W1')) throw new Error('confirm did not approve');
+    await h.tap('secretary', 'a:W1'); if (!h.answers().includes('Already handled.') || h.calls.filter(c => c[0] === 'approve').length !== 1) throw new Error('a second APPROVE was not refused');
+    await h.team.notify(small); await h.tap('secretary', 'a:W3'); if (!h.calls.some(c => c[0] === 'approve' && c[1] === 'W3')) throw new Error('a draft that moves no money should approve in one tap');
+    await h.team.notify(bad); if (h.last('secretary').buttons.includes('a:W2') || !/Actions unreadable: action 1: refund has no amount/.test(h.last('secretary').text)) throw new Error('an unreadable list offered APPROVE');
+    await h.tap('secretary', 'r:W2'); await h.msgFrom('secretary', 'make it 10% off, not a refund');
+    if (!h.calls.some(c => c[0] === 'reject' && c[1] === 'W2' && c[2] === 'make it 10% off, not a refund')) throw new Error('the next message was not the reject note');
+    big.state = 'done'; big.approved = true; big.actions[0].outcome = { status: 'done' }; big.result = 'Sent.'; await h.team.notify(big);
+    if (!h.sent.some(s => s.kind === 'edit' && /✓ Refund the broken order — approved/.test(s.text) && /a1 · refund · to #1042 · 912\.00 USD · done/.test(s.text))) throw new Error('the outcome did not come back to the card');
+    return 'card with the action line · 912 USD → "Send 912.00 USD?" → confirm → approve · second APPROVE "already handled" · reply approves in one tap · unreadable: no APPROVE · reject note · outcome edited in';
+  } finally { h.done(); }
+});
+await step('telegram: a lead takes /task, chats like the page, and its results come back to its own chat', async () => { // AC-3
+  const h = await teamHarness();
+  try {
+    await h.msgFrom('sales', '/start ' + h.team._code());
+    await h.msgFrom('sales', '/task call the three warm leads from the expo'); const add = h.calls.find(c => c[0] === 'addTask');
+    if (!add || add[1].dept !== 'sales' || add[1].by !== 'telegram' || !/^Added — /.test(h.last('sales').text)) throw new Error('/task: ' + JSON.stringify(add) + ' ' + h.last('sales')?.text);
+    await h.msgFrom('sales', 'what is our win rate?'); if (!h.calls.some(c => c[0] === 'leadChat' && c[2] === 'what is our win rate?')) throw new Error('free text did not go to the lead\'s chat');
+    await h.team.notify({ id: 'D1', dept: 'sales', agent: 'piper', title: 'Proposal for Ridgeline', state: 'done', result: 'The proposal.' }); if (h.last('sales').role !== 'sales' || !/✓ Proposal for Ridgeline/.test(h.last('sales').text)) throw new Error('the result did not reach the Sales bot');
+    await h.team.notify({ id: 'D2', dept: 'fin', agent: 'invo', title: 'Overdue list', state: 'done', result: 'x' }); if (!/^\[ACCOUNTING LEAD\] ✓ Overdue list/.test(h.last().text) || h.last().role !== 'secretary') throw new Error('a department with no bot should report through the secretary, named: ' + JSON.stringify(h.last()));
+    await h.msgFrom('secretary', '@sales how many leads came in this week?'); if (!/^SALES LEAD: /.test(h.last('secretary').text)) throw new Error('@sales from the secretary: ' + h.last('secretary').text);
+    return '/task → a Sales task · free text → the lead\'s chat · result → the Sales bot · no Accounting bot → the secretary speaks for it, named · @sales relays';
+  } finally { h.done(); }
+});
+await step('telegram: a CEO goal is planned across departments, every piece starts as a draft, and the CEO reports when all are in', async () => { // AC-6, AC-7
+  const plan = { pieces: [{ dept: 'delivery', title: 'Answer the open returns', text: 'Draft replies to all open returns.' }, { dept: 'ops', title: 'Find the cause', text: 'List which product the returns are for.' }, { dept: 'nowhere', title: 'x', text: 'x' }, { dept: 'delivery', title: 'dup', text: 'dup' }], why: 'Returns are piling up.' };
+  const h = await teamHarness({ asks: [plan, 'Two drafts are ready; one waits for you.'] });
+  try {
+    await h.msgFrom('ceo', '/start ' + h.team._code());
+    await h.msgFrom('ceo', 'goal: get this week\'s returns under control'); const card = h.last('ceo');
+    if (!/GOAL: get this week's returns under control/.test(card.text) || !/1\. DELIVERY LEAD — Answer the open returns/.test(card.text) || !/2\. OPERATIONS LEAD — Find the cause/.test(card.text) || /nowhere|dup/.test(card.text) || card.buttons.length !== 3) throw new Error('plan: ' + card.text);
+    const gid = card.buttons[0].split(':')[1];
+    await h.tap('ceo', `g:${gid}:s`); const adds = h.calls.filter(c => c[0] === 'addTask').map(c => c[1]);
+    if (adds.length !== 2 || !adds.every(o => o.needsOk === true && o.goal === gid && o.by === 'ceo')) throw new Error('pieces must start as drafts: ' + JSON.stringify(adds));
+    await h.tap('ceo', `g:${gid}:s`); if (h.calls.filter(c => c[0] === 'addTask').length !== 2) throw new Error('a second START started the goal twice');
+    const [t1, t2] = [...h.store.values()];
+    t1.state = 'waiting'; await h.team.notify(t1); if (h.sent.some(s => /GOAL IN/.test(s.text || ''))) throw new Error('reported before every piece was in');
+    t2.state = 'done'; t2.result = 'Mugs from batch 7.'; await h.team.notify(t2);
+    const rep = h.sent.find(s => /GOAL IN/.test(s.text || '')); if (!rep || rep.role !== 'ceo' || !/1 draft waits for your OK with the secretary/.test(rep.text)) throw new Error('the report: ' + JSON.stringify(rep));
+    return '2 valid pieces of 4 (unknown and duplicate departments dropped) · START → 2 drafts with the goal · a second START does nothing · the report waits for every piece and names the draft waiting';
+  } finally { h.done(); }
+});
+await step('telegram: reminders fire once (late once); a rule or trigger said to the secretary is saved only on "yes"; the morning brief comes once a day', async () => { // AC-5
+  const os = await import('node:os'); const brain = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-team-brain-'));
+  const ruleAsk = { title: 'Small refunds', kinds: ['refund'], max: 30, currency: 'USD', dailyMax: 200 };
+  const trigAsk = { event: 'return_requested', dept: 'delivery', title: 'Answer returns', text: 'Draft the reply.', dailyCount: 5 };
+  const h = await teamHarness({ brain, asks: [{ at: '2026-10-26T10:00:00', text: 'call the supplier' }, ruleAsk, trigAsk] });
+  try {
+    await h.msgFrom('secretary', '/start ' + h.team._code());
+    await h.msgFrom('secretary', 'remind me at 10 to call the supplier'); if (!/I'll remind you .*: call the supplier/.test(h.last('secretary').text)) throw new Error('reminder: ' + h.last('secretary').text);
+    h.setClock(Date.parse('2026-10-26T07:30:00')); const before = h.sent.length; await h.team.tick(); // 07:30: before the morning brief (08:00) and the reminder
+    if (h.sent.length !== before) throw new Error('something fired early');
+    h.setClock(Date.parse('2026-10-26T10:05:00')); await h.team.tick(); await h.team.tick();
+    const rem = h.sent.filter(s => /⏰ call the supplier/.test(s.text || '')); if (rem.length !== 1 || !/late/.test(rem[0].text)) throw new Error('reminder fired ' + rem.length + ' time(s): ' + rem.map(r => r.text));
+    const briefs = h.sent.filter(s => /^Good (morning|day)/.test(s.text || '')); if (briefs.length !== 1) throw new Error('morning brief sent ' + briefs.length + ' times');
+    await h.msgFrom('secretary', 'auto approve refunds under 30 USD, at most 200 a day'); if (!/Say "yes" to turn it on/.test(h.last('secretary').text)) throw new Error('no read-back: ' + h.last('secretary').text);
+    const AP = await import('./approvals.mjs'); if (AP.load(brain).rules.length) throw new Error('a rule was saved before "yes"');
+    await h.msgFrom('secretary', 'yes'); const rules = AP.load(brain).rules; if (rules.length !== 1 || rules[0].depts.length) throw new Error('rule after yes: ' + JSON.stringify(rules));
+    await h.msgFrom('secretary', 'when a return is requested, delivery drafts the reply'); if (!/Here is the trigger I would add/.test(h.last('secretary').text)) throw new Error('trigger read-back: ' + h.last('secretary').text);
+    await h.msgFrom('secretary', 'no'); const TR = await import('./triggers.mjs'); const { loadRoster } = await import('./roster.mjs'); if (TR.load(brain, loadRoster().agents).triggers.length) throw new Error('a trigger was saved after "no"');
+    return 'reminder once, marked late · morning brief once a day · rule read back, saved on yes (office-wide) · trigger read back, dropped on no';
+  } finally { h.done(); fs.rmSync(brain, { recursive: true, force: true }); }
+});
+await step('telegram: an old card cannot approve a reworked draft; five wrong codes void the pairing code; the boardroom answers only the bot it names', async () => { // AC-2, AC-4, AC-8
+  const W = { id: 'W9', dept: 'delivery', agent: 'dlead', title: 'Reply to Ana', state: 'waiting', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'reply', tool: 'mcp__gmail__send', to: 'ana@x.co', summary: 'Reply to Ana' }], draft: 'A long reply.' };
+  const h = await teamHarness({ tasks: [W] }), group = { id: -100, type: 'group' };
+  try {
+    const first = h.team._code(); for (let i = 0; i < 5; i++) await h.msgFrom('secretary', '/start 000001', 999);
+    if (h.team._code() === first) throw new Error('five wrong codes left the code standing');
+    await h.msgFrom('secretary', '/start ' + first); if (h.team.status().paired) throw new Error('a voided code paired');
+    await h.msgFrom('secretary', '/start ' + h.team._code()); if (!h.team.status().paired) throw new Error('the new code did not pair');
+    await h.team.notify(W); const oldMsg = h.team.state.cards.W9.msg;
+    await h.tap('secretary', 'r:W9', h.owner, oldMsg); await h.msgFrom('secretary', 'shorter please');
+    const back = h.sent.find(s => s.kind === 'edit' && /Sent back: "shorter please"/.test(s.text));
+    if (!back || back.buttons.length || h.team.state.cards.W9) throw new Error('the sent-back card kept its buttons or its place: ' + JSON.stringify(back));
+    W.state = 'waiting'; W.draft = 'Shorter.'; await h.team.notify(W); const newMsg = h.team.state.cards.W9?.msg;
+    if (!newMsg || newMsg === oldMsg) throw new Error('the reworked draft got no new card');
+    await h.tap('secretary', 'a:W9', h.owner, oldMsg); if (h.calls.some(c => c[0] === 'approve') || !h.answers().some(a => /That card is old/.test(a))) throw new Error('the old card approved the reworked draft');
+    await h.tap('secretary', 'a:W9', h.owner, newMsg); if (!h.calls.some(c => c[0] === 'approve' && c[1] === 'W9')) throw new Error('the new card did not approve');
+    await h.msgFrom('ceo', '/boardroom', h.owner, group); await h.msgFrom('secretary', '/boardroom', h.owner, group);
+    if (h.sent.filter(s => s.chat === -100 && /boardroom now/.test(s.text || '')).length !== 1) throw new Error('a bare /boardroom should get one answer, not one per bot');
+    const n = h.sent.length; await h.msgFrom('sales', 'how are we doing?', h.owner, group); if (h.sent.length !== n) throw new Error('a bot answered a boardroom message that did not name it');
+    await h.msgFrom('sales', '@sales_bot how are we doing?', h.owner, group);
+    if (!h.calls.some(c => c[0] === 'leadChat' && c[2] === 'how are we doing?') || h.last('sales').chat !== -100) throw new Error('@sales_bot in the boardroom: ' + JSON.stringify(h.calls.filter(c => c[0] === 'leadChat')));
+    return '5 wrong codes → a new code, the old one void · reject closes the card · the rework gets a new card · the old card refuses · one answer to /boardroom · only the named bot speaks, its @name stripped';
+  } finally { h.done(); }
+});
+await step('telegram: the CEO knows a goal said in plain words; CHANGE works without a CEO bot; goals and reminders keep their own files; a turn reaches Claude once', async () => { // AC-6, state
+  const plan1 = { pieces: [{ dept: 'emails', title: 'Win-back email', text: 'Draft a win-back email to last year\'s customers.' }, { dept: 'sales', title: 'Call the top ten', text: 'List the top ten past customers to call.' }], why: 'They bought before.' };
+  const plan2 = { pieces: [{ dept: 'emails', title: 'Win-back email only', text: 'Draft the win-back email.' }], why: 'Email only, as asked.' };
+  const h = await teamHarness({ asks: [plan1, plan2], runs: ['GOAL: win back last year\'s customers', 'Fine.', 'Sure.'] });
+  try {
+    await h.msgFrom('ceo', '/start ' + h.team._code());
+    await h.msgFrom('ceo', 'let\'s win back last year\'s customers'); const card = h.last('ceo');
+    if (!/^GOAL: win back last year's customers/.test(card.text) || card.buttons.length !== 3) throw new Error('plain words were not planned as a goal: ' + card.text);
+    const gid = card.buttons[0].split(':')[1];
+    await h.tap('secretary', `g:${gid}:c`); await h.msgFrom('secretary', 'only email, no calls'); // as if the plan had come through the secretary
+    if (h.team.state.goals[gid].pieces.length !== 1 || !/Win-back email only/.test(h.last('ceo').text)) throw new Error('CHANGE on the secretary did not re-plan: ' + h.last('ceo').text);
+    const D = path.join(h.dir, 'data'), tgFile = JSON.parse(fs.readFileSync(path.join(D, 'telegram.json'), 'utf8'));
+    if ('goals' in tgFile || 'reminders' in tgFile || !JSON.parse(fs.readFileSync(path.join(D, 'goals.json'), 'utf8')).goals[gid] || !fs.existsSync(path.join(D, 'reminders.json'))) throw new Error('goals and reminders should live in data/goals.json and data/reminders.json, not telegram.json');
+    await h.msgFrom('ceo', 'how is the week?'); await h.msgFrom('ceo', 'and the store?');
+    const prompt = h.calls.filter(c => c[0] === 'run').at(-1)[2], count = s => prompt.split(s).length - 1;
+    if (count('how is the week?') !== 1 || count('and the store?') !== 1) throw new Error('a message reached Claude twice:\n' + prompt);
+    return 'plain words → GOAL → planned · CHANGE pressed on the secretary re-plans · data/goals.json, data/reminders.json · each turn once in the prompt';
+  } finally { h.done(); }
+});
+await step('tokens: a run is counted whole, meters nest without leaking into each other, and the line reads plainly', async () => { // STORE (25 Oct 2026)
+  const T = await import('./src/tokens.js'), M = await import('./meter.mjs');
+  const r = T.fromRun({ input_tokens: 5, output_tokens: 7 }, { 'claude-sonnet-5-5': { inputTokens: 1200, outputTokens: 800, cacheReadInputTokens: 40000, cacheCreationInputTokens: 300 }, 'claude-haiku-5-5': { inputTokens: 100, outputTokens: 20 } });
+  if (T.total(r) !== 42420 || r.runs !== 1) throw new Error('modelUsage (every model in the run) should win over usage: ' + JSON.stringify(r));
+  const line = T.tokensText(T.add(r, T.fromRun({ input_tokens: 500, output_tokens: 80 })));
+  if (line !== '🔢 43k tokens · 2 runs (2.1k in · 40k cached · 900 out)') throw new Error('line: ' + line);
+  if (T.tokensText(null) !== '🔢 no Claude run, 0 tokens') throw new Error('no run: ' + T.tokensText(null));
+  const one = () => M.charge(T.fromRun({ input_tokens: 10, output_tokens: 0 }));
+  const outer = await M.measure(async () => { one(); const inner = await M.measure(async () => { one(); one(); }); return inner.usage; });
+  if (outer.usage.runs !== 3 || outer.value.runs !== 2) throw new Error(`nesting: outer ${outer.usage.runs} runs (want 3), inner ${outer.value.runs} (want 2)`);
+  const [a, b] = await Promise.all([M.measure(async () => { one(); await new Promise(res => setTimeout(res, 20)); one(); }), M.measure(async () => { await new Promise(res => setTimeout(res, 5)); one(); })]);
+  if (a.usage.runs !== 2 || b.usage.runs !== 1) throw new Error(`two tasks at once leaked: ${a.usage.runs} and ${b.usage.runs} (want 2 and 1)`);
+  M.charge(T.fromRun({ input_tokens: 1 })); // outside any meter: counted nowhere, no error
+  return 'modelUsage summed (Chrome\'s helper too) · "43k tokens · 2 runs (2.1k in · 40k cached · 900 out)" · nested 3 ⊃ 2 · parallel tasks stay apart';
+});
+await step('connectors: at most 10 in the bar and 5 per pod — the ones the desks use, Shopify on every pod, one logo per tool, the rest named', async () => { // STORE (25 Oct 2026)
+  const C = await import('./src/connectors.js'), ALL = ['emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'];
+  const servers = [
+    ...Array.from({ length: 24 }, (_, i) => ({ id: 'x' + i, name: 'Thing ' + i, status: 'connected', allowed: true, depts: ALL })),
+    { key: 'gmail', name: 'Gmail', status: 'connected', allowed: true, depts: ALL }, { id: 'pg', name: 'plugin:small-business:gmail', status: 'connected', allowed: true, depts: ALL },
+    { id: 'ps', name: 'plugin:small-business:shopify', status: 'connected', allowed: true, depts: ALL },
+    { key: 'canva', name: 'Canva', status: 'connected', allowed: true, depts: ['marketing'] },
+    ...Array.from({ length: 30 }, (_, i) => ({ id: 'n' + i, name: 'Needs ' + i, status: 'needs-auth', allowed: true, depts: ALL })),
+  ];
+  const agents = [{ id: 'm1', department: 'marketing', tools: ['canva'] }, { id: 'm2', department: 'marketing', tools: ['canva', 'gmail'] }, { id: 'e1', department: 'emails', tools: ['gmail'] }];
+  const c = C.choose(servers, agents), bar = [...new Set(Object.values(c.byDept).flat())];
+  if (bar.length > C.TOP_MAX || Object.values(c.byDept).some(v => v.length > C.DOCK_MAX)) throw new Error(`bar ${bar.length}, pods ${Object.values(c.byDept).map(v => v.length)}`);
+  if (!ALL.every(d => c.byDept[d].includes('ps'))) throw new Error('Shopify should be on every pod: ' + JSON.stringify(c.byDept));
+  if (c.byDept.marketing[1] !== 'canva' || c.byDept.emails[1] !== 'gmail') throw new Error('the tools the desks name should come first: ' + JSON.stringify(c.byDept));
+  if (bar.includes('pg') || !c.more.connected.includes('gmail')) throw new Error('two Gmails should show as one logo, the other named under +N (without "plugin:…:"): ' + c.more.connected.slice(-4));
+  if (c.more.off.length !== 30 || !/Needs 0 \(needs-auth\)/.test(c.more.off[0]) || c.more.connected.length !== servers.filter(s => s.status === 'connected').length - bar.length) throw new Error('the +N pill should name the rest: ' + JSON.stringify(c.more).slice(0, 200));
+  return `58 servers → ${bar.length} in the bar, at most ${C.DOCK_MAX} a pod · Shopify everywhere · Canva first in Marketing, Gmail in Emails · one Gmail · +${c.more.connected.length + c.more.off.length} named on hover`;
+});
+await step('telegram: every answer, card and result says its tokens', async () => { // STORE (25 Oct 2026)
+  const W = { id: 'W7', dept: 'delivery', agent: 'dlead', title: 'Reply to Ana', state: 'waiting', actionsRead: 'ok', actions: [{ id: 'a1', kind: 'reply', tool: 'mcp__gmail__send', to: 'ana@x.co', summary: 'Reply to Ana' }], draft: 'x', usage: { input: 3000, cacheWrite: 0, cacheRead: 8500, output: 500, runs: 2 } };
+  const h = await teamHarness({ tasks: [W], runs: ['Busy week.'] });
+  try {
+    await h.msgFrom('ceo', '/start ' + h.team._code());
+    await h.msgFrom('ceo', 'how was the week?'); if (!/Busy week\.\n\n🔢 5\.2k tokens · 1 run \(1\.0k in · 4\.0k cached · 200 out\)$/.test(h.last('ceo').text)) throw new Error('chat answer: ' + JSON.stringify(h.last('ceo').text));
+    await h.msgFrom('secretary', 'rules'); if (!/🔢 no Claude run, 0 tokens$/.test(h.last('secretary').text)) throw new Error('an answer with no run: ' + h.last('secretary').text);
+    await h.team.notify(W); if (!/🔢 the draft: 12k tokens · 2 runs/.test(h.last('secretary').text)) throw new Error('card: ' + h.last('secretary').text);
+    W.state = 'done'; W.approved = true; W.actions[0].outcome = { status: 'done' }; W.result = 'Sent.'; W.usage = { ...W.usage, input: 4000, runs: 3 }; await h.team.notify(W);
+    if (!h.sent.some(s => s.kind === 'edit' && /🔢 task total: 13k tokens · 3 runs/.test(s.text)) || !/🔢 task total: 13k tokens · 3 runs/.test(h.last('delivery').text)) throw new Error('the result should carry the task total');
+    return 'a chat answer: 5.2k tokens · 1 run · "rules": no Claude run, 0 tokens · the card: the draft\'s · the result and the card\'s outcome: the task total';
+  } finally { h.done(); }
+});
+
 /* ---------- 2. offline smoke (Playwright) ---------- */
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { try { ({ chromium } = await import('playwright-core')); } catch {} }
@@ -1024,17 +1248,18 @@ else {
     await step('smoke: a draft blocked while drafting says so on its row and card; a routine blocked while running says so on its row (demo)', async () => { // STORE spec 0003: AC-5
       await page.click('.tp-chip[data-f="all"]'); if (await page.evaluate(() => document.getElementById('rail').classList.contains('open'))) await page.keyboard.press('Escape'); // start from All, whatever the step before left
       await page.evaluate(n => { const base = { dept: 'emails', text: 'x', addedAt: n, by: 'routine', needsOk: true, actionsRead: 'ok', actions: [] };
-        window.CC.tasks.reconcile({ ...base, id: 'chk-blk', agent: 'cmail', title: 'Reply to the client thread', state: 'waiting', waitingAt: n, draft: 'A reply.', result: 'A reply.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__send_message', why: 'a write tool', at: n }], autoWhy: 'the draft tried to write while drafting (send_message), so you look at it yourself' });
+        window.CC.tasks.reconcile({ ...base, id: 'chk-blk', agent: 'cmail', title: 'Reply to the client thread', state: 'waiting', waitingAt: n, draft: 'A reply.', result: 'A reply.', usage: { input: 2000, cacheWrite: 0, cacheRead: 9500, output: 500, runs: 2 }, runDenied: [{ tool: 'mcp__claude_ai_Gmail__send_message', why: 'a write tool', at: n }], autoWhy: 'the draft tried to write while drafting (send_message), so you look at it yourself' });
         window.CC.tasks.reconcile({ ...base, id: 'chk-rtn', agent: 'imail', title: 'Triage the internal inbox', state: 'done', doneAt: n, needsOk: false, result: 'Triaged.', runDenied: [{ tool: 'mcp__claude_ai_Gmail__label_thread', why: 'a write tool', at: n }] }); }, Date.now());
       const metas = () => [...document.querySelectorAll('.tp-row .tp-m')].map(e => e.textContent);
       await until(() => { const m = [...document.querySelectorAll('.tp-row .tp-m')].map(e => e.textContent); return m.some(x => /blocked while drafting/.test(x)) && m.some(x => /blocked while running/.test(x)); });
       const m = await page.evaluate(metas); if (!m.some(x => /blocked while drafting/.test(x)) || !m.some(x => /blocked while running/.test(x))) throw new Error('rows: ' + m.filter(x => /blocked/.test(x)).join(' | '));
+      if (!m.some(x => /blocked while drafting.*🔢 12k tokens/.test(x))) throw new Error('the row should say the task\'s tokens: ' + m.filter(x => /blocked while drafting/.test(x)).join(' | ')); // STORE (25 Oct 2026)
       await page.evaluate(() => window.CC.openAgent('cmail'));
       await until(() => /Blocked while drafting/.test([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || ''));
       const card = await page.evaluate(() => ([...document.querySelectorAll('#mMsgs .m-appr')].pop()?.textContent || '').replace(/\s+/g, ' '));
       if (!/Blocked while drafting: send_message\./.test(card) || !/Not sent by rule: the draft tried to write while drafting/.test(card)) throw new Error('card: ' + card);
       await page.keyboard.press('Escape'); await until(() => !document.getElementById('rail').classList.contains('open'));
-      return 'row: blocked while drafting · card: send_message named, not sent by rule · routine row: blocked while running';
+      return 'row: blocked while drafting, 🔢 12k tokens · card: send_message named, not sent by rule · routine row: blocked while running';
     });
     await step('smoke: the store triggers and the Shopify line sit under Scheduled; a trigger task says where it came from (demo)', async () => { // STORE spec 0004: AC-8
       await page.evaluate(() => window.CC.tasks.setTriggers({ shopify: { on: true, shop: 'chk.myshopify.com', poll: 5, lastOk: Date.now() - 120000, problem: null }, triggers: [{ id: 'returns', title: 'Answer the new return requests', event: 'return_requested', dept: 'delivery', agent: 'dlead', desc: 'on a return request', dailyCount: 10, today: 3, held: 2, needsOk: true, paused: false }] }));
@@ -1044,6 +1269,12 @@ else {
       if (!/SHOPIFY/.test(rows[0]) || !/chk\.myshopify\.com · checked 2 min ago · every 5 min · read-only/.test(rows[0]) || !/Answer the new return requests/.test(rows[1]) || !/3 of 10 today/.test(rows[1]) || !/2 held \(cap reached\)/.test(rows[1])) throw new Error('rows: ' + JSON.stringify(rows));
       await page.evaluate(() => document.querySelector('.tp-row.trig[data-trig="returns"] [data-tact="pause"]').click()); await until(() => document.querySelector('.tp-row.trig[data-trig="returns"]')?.classList.contains('paused'));
       if (!await page.evaluate(() => window.CC.tasks.triggers().triggers[0].paused === true)) throw new Error('PAUSE did not take');
+      await page.evaluate(() => window.CC.tasks.setTelegram({ on: true, paired: false, code: '482915', bots: [{ role: 'secretary', set: true }, { role: 'ceo', set: true }] })); // STORE spec 0005: the pairing code shows here
+      await until(() => /\/start 482915/.test(document.querySelector('.tp-row.tg')?.textContent || ''));
+      if (!/send \/start 482915 to any of your bots/.test(await page.evaluate(() => document.querySelector('.tp-row.tg')?.textContent || ''))) throw new Error('the pairing code is not shown');
+      await page.evaluate(() => window.CC.tasks.setTelegram({ on: true, paired: true, owner: 'Omer', group: true, reminders: 2, goals: 1, bots: [{ role: 'secretary', set: true }, { role: 'ceo', set: true }, { role: 'sales', set: true, problem: 'token revoked' }] }));
+      await until(() => /paired with Omer/.test(document.querySelector('.tp-row.tg')?.textContent || ''));
+      if (!/paired with Omer · 3 bots · boardroom · 2 reminders · 1 goal running · sales: token revoked/.test(await page.evaluate(() => document.querySelector('.tp-row.tg').textContent))) throw new Error('telegram line: ' + await page.evaluate(() => document.querySelector('.tp-row.tg').textContent));
       await page.evaluate(() => window.CC.tasks.setTriggers({ shopify: { on: true, shop: 'chk.myshopify.com', poll: 5, lastOk: null, problem: 'the app is not installed on the store yet' }, triggers: [] }));
       await until(() => /not installed/.test(document.querySelector('.tp-row.trig.head')?.textContent || ''));
       if (!/not installed/.test(await page.evaluate(() => document.querySelector('.tp-row.trig.head').textContent))) throw new Error('the Shopify problem is not shown');
@@ -1063,7 +1294,7 @@ else {
 {
   // STORE (24 Oct 2026): ask the OS for a free port; a random 46xx could land on one another program holds (EADDRINUSE)
   const port = await new Promise((resolve, reject) => { const s = net.createServer().once('error', reject).listen(0, () => { const p = s.address().port; s.close(() => resolve(p)); }); });
-  const env = { ...process.env, PORT: String(port), AO_NO_STORE: '1' }; // STORE spec 0004: the check's office never reads the store or starts trigger tasks
+  const env = { ...process.env, PORT: String(port), AO_NO_STORE: '1', AO_NO_TELEGRAM: '1' }; // STORE spec 0005: nor talk on Telegram // STORE spec 0004: the check's office never reads the store or starts trigger tasks
   // STORE spec 0001 (AC-15): an approve the office was stopped in the middle of, and a gate folder it left — planted before the server starts
   const TASKS = path.join(ROOT, 'data', 'tasks.json'), readTasks = () => { try { return JSON.parse(fs.readFileSync(TASKS, 'utf8')); } catch { return []; } };
   const writeTasks = l => { fs.mkdirSync(path.dirname(TASKS), { recursive: true }); fs.writeFileSync(TASKS, JSON.stringify(l, null, 2)); };
@@ -1128,10 +1359,11 @@ else {
       for (const [k, name] of [['ops', 'Operations'], ['delivery', 'Delivery']]) {
         const lead = up.agents.find(a => a.department === k && a.lead); if (!lead) throw new Error('no lead in ' + k);
         const list = await chat(lead.id, 'routines'); if (!list.routines || /not on for/.test(list.reply) || !new RegExp(`${name} (routines:|timetable)`).test(list.reply)) throw new Error(`${k} list: ` + JSON.stringify(list).slice(0, 160));
+        if (!list.usage || list.usage.runs !== 0) throw new Error(`${k}: the chat answer should say its tokens (no Claude run here): ` + JSON.stringify(list.usage)); // STORE: tokens per chat turn
         const ask = await chat(lead.id, 'every weekday, check the stock levels'); if (!ask.routines || !/^What time\?/.test(ask.reply)) throw new Error(`${k} asked back: ` + JSON.stringify(ask).slice(0, 160));
         out.push(`${lead.name}: ${list.reply.split('\n')[0].slice(0, 40)}`);
       }
-      return out.join(' · ') + ' · missing time asked back';
+      return out.join(' · ') + ' · missing time asked back · each answer says 0 tokens';
     });
     await step('server: /api/health says teams and the browser are on; the bar has the Chrome tile', async () => {
       if (!up.teams || up.teams.enabled !== true || up.teams.max !== 4) throw new Error('health.teams: ' + JSON.stringify(up.teams));
@@ -1213,7 +1445,28 @@ else {
         return `${a.triggers[0].title} → ${lead.name} · pause · RUN NOW starts nothing in a check · 404 · lead lists and resumes · delete keeps the broken one · store polling off`;
       } finally { fs.rmSync(TF, { force: true }); }
     });
+    await step('server: /api/telegram says whether the team is on, and the check\'s office never talks on Telegram', async () => { // STORE spec 0005
+      const t = await (await fetch(base + '/api/telegram')).json();
+      if (typeof t.on !== 'boolean' || !Array.isArray(t.problems)) throw new Error('shape: ' + JSON.stringify(t).slice(0, 160));
+      if (t.on) throw new Error('the check\'s office started the bots (AO_NO_TELEGRAM=1 should keep them off)');
+      return t.configured ? 'bots configured here · kept off in the check' : 'no bots configured here';
+    });
     await step('server: rejects an empty task', async () => { const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"dept":"sales","text":""}' }); if (r.status !== 400) throw new Error('status ' + r.status); });
+    if (chromium) await step('server: the served office shows real work only — no demo tasks or counters — and keeps the connector bar short', async () => { // STORE (25 Oct 2026)
+      let browser; try { browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); } catch { browser = await chromium.launch({ channel: 'chrome' }); }
+      try {
+        const page = await browser.newPage({ viewport: { width: 1512, height: 900 } }); const errs = []; page.on('pageerror', e => errs.push(e.message));
+        await page.goto(base + '/'); await page.waitForFunction(() => window.CC?.tasks?.isLive(), null, { timeout: 30000 });
+        await page.waitForFunction(() => document.querySelectorAll('#topconn img').length || document.querySelector('#topconn .tc-none'), null, { timeout: 45000 });
+        await page.waitForTimeout(6000); // long enough for the demo to have invented work, had it been allowed to
+        const r = await page.evaluate(() => ({ fake: window.CC.tasks.tasks.filter(t => !t.live).length, labels: [...document.querySelectorAll('.badge .m-lab')].map(e => e.textContent), icons: document.querySelectorAll('#topconn img').length, more: document.querySelector('#topconn .tc-more')?.textContent || '' }));
+        if (errs.length) throw new Error('page errors: ' + errs.join(' | '));
+        if (r.fake) throw new Error(`${r.fake} demo tasks on the served page`);
+        if (!r.labels.includes('DONE TODAY') || !r.labels.includes('TOKENS TODAY') || r.labels.some(l => /EMAILS SENT|CALLS|COST PER USER/.test(l))) throw new Error('pod numbers: ' + r.labels.join(', '));
+        if (r.icons > 10) throw new Error(`${r.icons} connector logos in the bar (at most 10)`);
+        return `no demo tasks after 6 s · pods: DONE TODAY, WAITING YOUR OK, TOKENS TODAY · ${r.icons} logos in the bar${r.more ? ', ' + r.more + ' more named on hover' : ''}`;
+      } finally { await browser.close(); }
+    });
     if (LIVE) {
       await step('live: Claude routes a task', async () => {
         const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dept: 'emails', text: 'reply to a client asking when their September report will arrive' }) });

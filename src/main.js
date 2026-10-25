@@ -12,6 +12,7 @@ import {
 import { initMcp } from './mcp.js';
 import { loadConnectors } from './connectors.js';
 import { initTasks } from './tasks.js';
+import { tokensText, total as tokTotal, short as tokShort } from './tokens.js'; // STORE (25 Oct 2026): every chat answer says its tokens
 import { initBrain } from './brain.js';
 import { initHero, HERO } from './hero.js';
 if (HERO) document.body.classList.add('hero'); // the website hero: no Sahni.ai mark or licence line on top of the page that already carries them // sahni.ai/custom hero mode (16 Sep 2026): opt-in via window.HERO, no-op otherwise
@@ -220,7 +221,7 @@ for (const a of AGENTS) {
   const live = hasScreens() ? makeScreen(a.id, a.name) : null;
   const { group: desk, screenSet } = makeDesk(dept.chip, live);
   station.add(desk);
-  screenSets.push({ screenSet, dept: a.dept, live });
+  screenSets.push({ screenSet, dept: a.dept, agent: a.id, live });
   const chair = makeChair();
   chair.position.set(0, 0, 1.75);
   station.add(chair);
@@ -321,7 +322,16 @@ function tickDim(dt) {
 /* ---------- department billboards — v1's exact agreed metric rows + amber approval row ---------- */
 const kv = id => KPIS.find(k => k.id === id).val;
 let brainNotes = brain.state.notes;
-const BB_ROWS = profileRows() || {
+// STORE (25 Oct 2026): the office the server serves shows real numbers and real work only — the demo's counters, invented
+// events, fake approvals and sample screens stay in the demo (opened as a file)
+const SERVED = location.protocol.startsWith('http');
+const midnight = () => new Date().setHours(0, 0, 0, 0);
+const realTasks = (k, agent) => (tasks ? tasks.tasks : []).filter(t => t.live && (!k || t.dept === k) && (!agent || t.agent === agent));
+const doneToday = list => list.filter(t => t.state === 'done' && t.doneAt >= midnight()).length;
+const waitingOk = list => list.filter(t => t.state === 'waiting').length;
+const tokensToday = list => tokShort(list.filter(t => (t.changedAt || 0) >= midnight()).reduce((s, t) => s + tokTotal(t.usage), 0));
+const realRows = k => [['DONE TODAY', () => doneToday(realTasks(k))], ['WAITING YOUR OK', () => waitingOk(realTasks(k))], ['TOKENS TODAY', () => tokensToday(realTasks(k))]];
+const BB_ROWS = profileRows() || (SERVED ? { ...Object.fromEntries(DEPT_KEYS.map(k => [k, realRows(k)])), brain: [['NOTES INDEXED', () => brain.state.notes.toLocaleString('en-NZ')]] } : {
   emails: [
     ['EMAILS SENT', () => STATS.emailsSent],
     ['REPLIES DRAFTED', () => STATS.drafts]],
@@ -343,7 +353,7 @@ const BB_ROWS = profileRows() || {
     ['BILLS PAID', () => STATS.billsPaid]],
   brain: [
     ['NOTES INDEXED', () => brainNotes.toLocaleString('en-NZ')]],
-};
+});
 if (PROFILE && !BB_ROWS.brain) BB_ROWS.brain = [['NOTES INDEXED', () => brainNotes.toLocaleString('en-NZ')]];
 for (const k of [...DEPT_KEYS, 'brain']) {
   const dept = DEPTS[k];
@@ -639,7 +649,20 @@ function renderChat(id) {
     el.addEventListener('click', () => resolveApproval(id, false)));
   mMsgs.scrollTop = mMsgs.scrollHeight;
 }
+function renderRealActivity(id) { // NOW · today's numbers · tasks done per day this week · what really happened
+  const r = R[id], mine = realTasks(null, id), d = mine.find(t => t.state === 'doing'), w = mine.filter(t => t.state === 'waiting');
+  document.getElementById('mNow').innerHTML = d ? `NOW &nbsp;<b>${esc(d.title)}</b>` : w.length ? `WAITING FOR YOUR OK &nbsp;<b>${esc(w[0].title)}</b>` : 'NOW &nbsp;<b>Nothing in progress</b>';
+  const done = mine.filter(t => t.state === 'done');
+  document.getElementById('mStats').innerHTML = [['DONE TODAY', doneToday(mine)], ['WAITING YOUR OK', w.length], ['TOKENS TODAY', tokensToday(mine)], ['DONE IN ALL', done.length]].map(([l, val]) => `
+    <div class="st"><div class="st-l">${esc(l)}</div><div class="st-v">${esc(String(val))}</div></div>`).join('');
+  const day0 = midnight(), days = [6, 5, 4, 3, 2, 1, 0].map(n => done.filter(t => t.doneAt >= day0 - n * 864e5 && t.doneAt < day0 - (n - 1) * 864e5).length), mx = Math.max(1, ...days);
+  document.querySelector('#mChart .ch-lbl').textContent = 'TASKS DONE · LAST 7 DAYS';
+  document.querySelector('#mChart .ch-bars').innerHTML = days.map(n => `<i style="height:${Math.max(2, Math.round(n / mx * 100))}%;background:${DEPTS[r.a.dept].chip}" title="${n}"></i>`).join('');
+  document.getElementById('mFeed').innerHTML = r.feed.length ? r.feed.map(f => `
+    <div class="fe"><span class="fi">${f.i}</span><span>${esc(f.text)}</span><span class="ft">${ago(f.ts)}</span></div>`).join('') : '<div class="fe"><span class="fi">·</span><span>Nothing yet. Work this agent does shows here.</span><span class="ft"></span></div>';
+}
 function renderActivity(id) {
+  if (SERVED) return renderRealActivity(id); // STORE (25 Oct 2026): served, the profile is this agent's real work
   const r = R[id], v = r.v1;
   const task = rnd(v.tasks || ['Working through the queue'])
     .replace('{co}', rnd(P.co)).replace('{person}', person()).replace('{count}', ri(3, 9));
@@ -847,7 +870,7 @@ function sendChat(text) {
         .then(async res => { if (!res.ok) throw new Error((await res.json()).error || res.statusText); return res.json(); })
         .then(j => {
           const h = chatHist[id]; const k = h.findIndex(m => m.who === 'work' && m.text === `${r.a.name} is thinking`); if (k >= 0) h.splice(k, 1);
-          chatPush(id, { who: 'agent', text: j.reply });
+          chatPush(id, { who: 'agent', text: j.reply + (j.usage ? '\n\n' + tokensText(j.usage) : '') });
           if (j.routines && tasks.refresh) tasks.refresh(); // a routine was set, paused, run or deleted in chat
           if (j.read) for (const n of j.read.slice(0, 2)) brain.readNote(id, n);
           if (j.tools && j.tools.length) mcp.onToolsUsed(id, j.tools);
@@ -1059,13 +1082,21 @@ function fireAgentEvent(seedTs) {
   }
 }
 // seed a believable history so Activity isn't empty at boot
-for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000);
+if (!SERVED) for (let i = 0; i < 170; i++) fireAgentEvent(Date.now() - ri(2, 200) * 60000); // STORE (25 Oct 2026): the demo only — a served office's activity is what really happened
 for (const r of Object.values(R)) r.feed.sort((a, b) => b.ts - a.ts);
 
 /* ---------- minimal sim: work bobs, screen updates, brain meetings ---------- */
 let meeting = null; // Brain meetings fire ONLY on the X hotkey (AJ's call — demo cue, not ambient)
 let nextApprovalAt = performance.now() + 20000;
 let nextMetricAt = performance.now() + 3000;
+let nextRealAt = 0;
+const wrap28 = s => { const out = []; let line = ''; for (const w of String(s).split(/\s+/)) { if ((line + ' ' + w).trim().length > 28) { if (line) out.push(line); line = w.slice(0, 28); } else line = (line + ' ' + w).trim(); } if (line) out.push(line); return out; };
+function realScreen(ss) { // the desk's real task: working on it, waiting for the owner's OK, or idle
+  const mine = realTasks(null, ss.agent), d = mine.find(t => t.state === 'doing'), w = mine.find(t => t.state === 'waiting'), t = d || w;
+  const lines = t ? [d ? '▸ working on' : '⏸ waiting for your OK', ...wrap28(t.title).slice(0, 2)] : ['', '— idle —'];
+  const key = lines.join('|'); if (ss.shown === key) return;
+  ss.shown = key; ss.screenSet.draw(lines); ss.screenSet.tex.needsUpdate = true;
+}
 let nextEmoteAt = performance.now() + 2000;
 
 function planMeeting(now) {
@@ -1250,7 +1281,7 @@ function tickSim(now, dt) {
   brain.tick(now);
   // schedule a new approval request now and then — capped so a long unattended demo
   // never ends up with half the office stuck waving (v1 demo-safety rule)
-  if (now > nextApprovalAt && !(tasks && tasks.isLive())) { // V3.5: a live office's approvals are real (routine drafts) — no theatre ones
+  if (now > nextApprovalAt && !SERVED && !(tasks && tasks.isLive())) { // V3.5: a live office's approvals are real (routine drafts) — no theatre ones
     const pending = Object.values(R).filter(r => r.state === 'stuck').length;
     if (pending < 2) {
       const ids = Object.keys(R).filter(id => R[id].state === 'working' && !R[id].a.lead);
@@ -1259,7 +1290,7 @@ function tickSim(now, dt) {
     nextApprovalAt = now + 50000 + Math.random() * 40000;
   }
   // agent events drive everything — feed, chat streams, billboard metrics (nothing is static)
-  if (now > nextMetricAt) {
+  if (!SERVED && now > nextMetricAt) {
     fireAgentEvent();
     nextMetricAt = now + 2600 + Math.random() * 3800;
   }
@@ -1267,6 +1298,9 @@ function tickSim(now, dt) {
   if (hasScreens()) {
     const slow = view.zoom < 1.4;
     for (const ss of screenSets) if (ss.live) ss.live.tick(now, slow);
+  }
+  else if (SERVED) { // STORE (25 Oct 2026): served, a desk's monitor and the pod's numbers say what that desk is really doing
+    if (now > nextRealAt) { nextRealAt = now + 2000; updateBillboards(); for (const ss of screenSets) realScreen(ss); }
   }
   // rotate desk screen content — a couple of screens refresh every beat so the room reads busy
   else if (Math.floor(now / 1800) !== Math.floor((now - dt * 1000) / 1800)) {

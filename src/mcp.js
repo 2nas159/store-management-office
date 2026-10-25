@@ -178,6 +178,14 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
       topconn.appendChild(img);
       topImgs[k] = img;
     });
+    const more = LIVE && connectors.more; // STORE (25 Oct 2026): the rest, named on hover — the bar keeps to the ones that matter (connectors.js TOP_MAX, DOCK_MAX)
+    if (more && more.connected.length + more.off.length) {
+      const pill = document.createElement('span');
+      pill.className = 'tc-more';
+      pill.textContent = '+' + (more.connected.length + more.off.length);
+      pill.title = [more.connected.length ? `${more.connected.length} more connected: ${more.connected.join(', ')}` : '', more.off.length ? `${more.off.length} not usable yet: ${more.off.join(', ')}` : ''].filter(Boolean).join('\n\n');
+      topconn.appendChild(pill);
+    }
     if (LIVE && !uniqKeys.length) { // honest empty state — nothing is wired until the user connects something
       const none = document.createElement('span');
       none.className = 'tc-none';
@@ -459,7 +467,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
       m.dot.setAttribute('cx', ex); m.dot.setAttribute('cy', ey);
       m.dot.setAttribute('opacity', (f ? 0.85 : 0.45) * wireA);
     }
-    if (now > nextModelPulse) {
+    if (!LIVE && now > nextModelPulse) { // STORE: live, the model wire pulses on real runs only
       modelPulse(Math.random() < 0.6 ? 'claude' : 'chatgpt');
       nextModelPulse = now + 2400 + Math.random() * 3200;
     }
@@ -602,6 +610,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
   // wire into that agent's pod (keys as the server gives them: logo key, server id, or 'web')
   function onToolsUsed(agentId, keys) {
     const r = R[agentId]; if (!r || !Array.isArray(keys)) return;
+    if (LIVE) modelPulse('claude', true); // STORE: a real run is the only thing that pulses the model wire live
     keys.forEach((key, i) => setTimeout(() => {
       const t = performance.now();
       if (key === 'web') { modelPulse('claude', true); return; }
@@ -723,7 +732,7 @@ export function initMcp({ scene, hud, LAYOUT, DEPTS, FR, R, connectors = null })
 
       // steady exchange: a random connector and a random desk trade packets both ways —
       // the constant "connectors helping the agents" energy AJ asked for
-      if (now > dk.nextAmbient && dk.seats.length && n) { // n = 0 when no connector is wired to this pod — nothing to pulse
+      if (!LIVE && now > dk.nextAmbient && dk.seats.length && n) { // n = 0 when no connector is wired to this pod — nothing to pulse · STORE: live, only real tool use pulses
         const item = byDept[dept][Math.floor(Math.random() * n)];
         const seat = dk.seats[Math.floor(Math.random() * dk.seats.length)];
         const outFirst = Math.random() < 0.5;

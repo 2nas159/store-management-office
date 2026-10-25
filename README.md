@@ -58,7 +58,9 @@ Without `./setup`: `npm install && node build.mjs && npm start`.
 
 1. Open http://localhost:4520. The panel on the right says **LIVE · CLAUDE** when the server is
    connected. Double-clicking `dist/command-centre-v2.html` opens the same office on its own,
-   without a server, in demo mode.
+   without a server, in demo mode. The served office shows only real work: no sample tasks,
+   no invented events. Each department card counts what was done today, what waits for your
+   OK and the tokens used today, and each desk's monitor shows what that agent is working on.
 2. In the bar at the top of the panel, pick a department, type a task in plain words, press **Add**.
    Claude picks the agent and names them; the task appears in the feed; the agent picks it up,
    works, and the deliverable lands in that agent's chat and in your brain folder as a note.
@@ -76,9 +78,12 @@ Without `./setup`: `npm install && node build.mjs && npm start`.
 
 The bar under **CONNECTED TO** is real: it is the list from `claude mcp list` on this machine,
 which is the same list the agents get as tools. Gmail, Slack, Notion, Google Drive, Canva,
-whatever you have connected in claude.ai or added with `claude mcp add`. A server that needs
-authentication shows grey with the reason on hover, and is not wired to any pod until it works.
-Nothing connected yet? The bar says so.
+whatever you have connected in claude.ai or added with `claude mcp add`. The bar keeps to the
+ones that matter: at most 10 logos, at most 5 beside each department. The tools a department's
+agents name come first, then servers wired to chosen departments, then a store's core tools;
+Shopify is on every department. One logo per tool, so two Gmails show once. The rest, and the
+servers that need authentication, are named on hover over the **+N** pill; nothing that is not
+working is wired to a pod. Nothing connected yet? The bar says so.
 
 Agents can call those servers while they work, plus web search. They never get Bash, file
 tools or sub-agents. Their standing rule: read freely; send, post, pay, delete or change
@@ -262,8 +267,31 @@ its Client ID and Secret go in `office.config.local.json`, never the shared file
 `<brain>/Agents Office/triggers.json` says which desk does what; everything one check finds
 becomes one task, capped per day, run like a routine draft. Customer-written text stays out of
 the task unless the trigger opts in. The first check records where the store stands and starts
-nothing; a new trigger starts from when it is added. `node triggers.mjs` tests the connection without starting anything; the triggers and
-the store's status show under the **Scheduled** chip.
+nothing; a new trigger starts from when it is added. `node triggers.mjs` tests the connection
+without starting anything; the triggers and the store's status show under the **Scheduled** chip.
+
+The team is on Telegram too: eight bots, each its own contact. The **secretary** brings every
+draft that waits for you, with its action list and APPROVE / REJECT (a second tap when it moves
+more than `confirmAbove`), a morning brief, reminders, your calendar, inbox triage and office
+admin by sentence (rules, routines, triggers, always read back before saving). The **CEO** takes
+goals ("goal: get this week's returns answered"), plans them across departments, starts every
+piece as a draft and reports back, plus a weekly brief. Each **department lead** chats as on the
+page and takes work with `/task …`. Create the bots in @BotFather, put their tokens in
+`office.config.local.json`, start the office and send it the pairing code it shows; only your
+Telegram account gets an answer (five wrong pairing codes void the code). The office connects
+out, so nothing on your machine is exposed. A card you sent back with REJECT closes, and the
+reworked draft comes as a new card, so an old button never approves a draft you have not seen.
+`/boardroom` in a group makes it the boardroom: the leads post short updates there and a bot
+answers only when you mention it. Goals and reminders live in `data/goals.json` and
+`data/reminders.json`; deleting `data/telegram.json` unpairs. `node telegram.mjs` tests the
+tokens without starting anything; the pairing code and the bots' status show under **Scheduled**.
+
+Everything says what it cost. Each task adds up the tokens of every Claude run it takes (routing,
+the desks of a team, the draft, the approve run, a rework) and shows the total on its row and its
+result, for example `🔢 48k tokens · 3 runs (5.3k in · 41k cached · 1.9k out)`. Every chat answer
+on the page and every Telegram message carries the same line: a reply, an approval card (the
+draft), a result (the task total), a goal report (the whole goal), a brief. Cached tokens are the
+part Claude reread from its cache, which costs much less than new input.
 
 The clock lives in the server: `npm start` has to be running, but the page does not have to be
 open. A run missed while the machine was asleep or the office was off is caught up once when it

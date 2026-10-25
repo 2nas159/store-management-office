@@ -126,14 +126,14 @@ spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `
 
 ### 7. The team on Telegram · GA
 Eight Telegram bots: a CEO who runs goals across departments, a secretary who collects every approval and runs your day (brief, calendar, reminders, admin, inbox), and the six department leads as their own contacts. The office connects out, so nothing is exposed; only your paired Telegram account can command them. Approving can move money, so it gets the full review.
-spec [0005](../specs/0005-telegram-team.md)
+spec [0005](../specs/0005-telegram-team.md) · code in `telegram.mjs`, `team.mjs`, `serve.mjs`, `src/tasks.js`, `check.mjs`
 **Done when:** from Telegram the owner can approve and reject drafts (a second tap above the confirm amount), talk to each lead and give it tasks, get the morning brief and reminders, manage rules, routines and triggers by sentence, and give the CEO a goal that runs across departments and reports back; nobody else can command the bots.
 - [x] Design it (spec): `/architect the team on telegram`
-- [ ] Build it: `/develop the team on telegram`
-  - [ ] Thread: the client, pairing and the lock; the secretary pushes approvals with buttons (AC-1, AC-2, AC-4, AC-9)
-  - [ ] Lead bots: chat, /task, results and store events to the right lead (AC-3)
-  - [ ] The secretary's day: morning brief, reminders, calendar, inbox triage, admin with triggers from chat (AC-5)
-  - [ ] The CEO: goals across departments, the weekly brief, the boardroom (AC-6, AC-7, AC-8)
+- [x] Build it: `/develop the team on telegram`
+  - [x] Thread: the client, pairing and the lock; the secretary pushes approvals with buttons (AC-1, AC-2, AC-4, AC-9)
+  - [x] Lead bots: chat, /task, results and store events to the right lead (AC-3)
+  - [x] The secretary's day: morning brief, reminders, calendar, inbox triage, admin with triggers from chat (AC-5)
+  - [x] The CEO: goals across departments, the weekly brief, the boardroom (AC-6, AC-7, AC-8)
 - [ ] Verify it: `/check verify the team on telegram`
 - [ ] Test it: `/test the team on telegram`
 - [ ] Review it: `/check review the team on telegram`

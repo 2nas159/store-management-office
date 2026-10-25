@@ -37,6 +37,11 @@ export function loadConfig() {
     for (const k of ['clientId', 'clientSecret', 'token']) if (base.shopify?.[k]) { c.problems.push(`shopify.${k} is in office.config.json, which git shares: move it to office.config.local.json (gitignored)`); if (local.shopify?.[k] === undefined) delete c.shopify[k]; }
     if (!base.shopify && !local.shopify) delete c.shopify;
   }
+  { // STORE spec 0005: bot tokens live in the local file only; a token in the shared (git) file is refused, never used
+    c.telegram = { ...(base.telegram || {}), ...(local.telegram || {}) };
+    if (base.telegram?.bots && Object.keys(base.telegram.bots).length) { c.problems.push('telegram.bots (bot tokens) are in office.config.json, which git shares: move them to office.config.local.json (gitignored)'); c.telegram.bots = local.telegram?.bots || {}; }
+    if (!base.telegram && !local.telegram) delete c.telegram;
+  }
   c.brainPath = path.resolve(ROOT, c.brain);
   return c;
 }

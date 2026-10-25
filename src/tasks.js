@@ -24,6 +24,7 @@ import { DEPTS, AGENTS, DEPT_KEYS, ROUTINE_DEPTS, routineRefusal } from './data.
 import { P, rnd, ri } from './v1data.js';
 import { applyTasks, PROFILE, titleCase } from './profile.js';
 import { parseWhen, describe, nextRun, fromPicker, untilText } from './when.js';
+import { tokensText, total as tokTotal, short as tokShort } from './tokens.js'; // STORE (25 Oct 2026): tokens per task
 import { initCalendar } from './calendar.js'; // V3.2.1 (16 Sep 2026): the calendar on P
 import { readOf, summary as actSummary, cardLines, money as actMoney, STATUS_TEXT } from './actions.js'; // STORE (24 Oct 2026): a draft's outbound actions (spec 0001)
 import { MODEL_KEYS, MODELS, DEFAULT_MODEL, modelName, normModel, FROM_TEXT , EFFORT_KEYS, EFFORT_NAME, normEffort, effortName, effortFor } from './models.js';
@@ -222,7 +223,7 @@ export function initTasks(ctx) {
       return;
     }
     chatPush(t.agent, { who: 'file', icon: t.error ? '⚠' : '📄', name: (t.note || slug(t.title)) + '.md',
-      meta: `${t.error ? 'could not complete' : t.autoApproved ? `sent by rule ${ruleTitles(t)} · saved to your brain` : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)} · click to view`, content: t.result, mock: t.live ? outcomesMock(t) : '' });
+      meta: `${t.error ? 'could not complete' : t.autoApproved ? `sent by rule ${ruleTitles(t)} · saved to your brain` : t.approved ? 'sent after your OK · saved to your brain' : 'delivered · saved to your brain'} · ${timeStr(t.doneAt)}${t.usage?.runs ? ' · ' + tokensText(t.usage).slice(3) : ''} · click to view`, content: t.result, mock: t.live ? outcomesMock(t) : '' });
     if (!t.error) chatPush(t.agent, { who: 'agent', text: `Done — "${t.title}"${t.routine ? ` (routine, ${t.when}${t.late ? ', ran late' : ''})` : ''} is ready above${t.team?.members?.length ? ` — the team was ${membersText(t)} and me` : ''}${t.read && t.read.length ? ` (I read ${t.read.slice(0, 3).join(', ')})` : ''}${t.used && t.used.length ? `. Used ${t.used.join(', ')}` : ''}. Say "revise: …" and I'll change it.` });
     feedPush(R[t.agent], '📄', `Delivered: ${t.title}`);
     if (brain && t.read) for (const n of t.read.slice(0, 2)) brain.readNote(t.agent, n);
@@ -235,7 +236,7 @@ export function initTasks(ctx) {
   }
 
   /* ---------- seed a believable morning ---------- */
-  {
+  if (!location.protocol.startsWith('http')) { // STORE (25 Oct 2026): the demo only — the office the server serves starts from its real tasks
     const now = performance.now(), wall = Date.now();
     for (const a of AGENTS) {
       const r = R[a.id];
@@ -313,7 +314,8 @@ export function initTasks(ctx) {
   function setOfficeModel(k) { officeModel = normModel(k) || DEFAULT_MODEL; if (!modelTouched) P_.model.value = officeModel; }
   const chosenModel = () => (modelTouched ? P_.model.value : null);
   function resetModel() { modelTouched = false; P_.model.value = officeModel; P_.model.classList.remove('set'); resetEffort(); }
-  const modelBit = t => t.modelUsed ? ` · ${modelName(t.modelUsed)}${t.effortUsed ? ' ' + t.effortUsed : ''}${t.modelFrom && t.modelFrom !== 'office' ? ' (' + FROM_TEXT[t.modelFrom] + ')' : ''}` : '';
+  const modelBit = t => (t.modelUsed ? ` · ${modelName(t.modelUsed)}${t.effortUsed ? ' ' + t.effortUsed : ''}${t.modelFrom && t.modelFrom !== 'office' ? ' (' + FROM_TEXT[t.modelFrom] + ')' : ''}` : '') + tokensBit(t);
+  const tokensBit = t => t.usage?.runs ? ` · <span class="tp-tok" title="${esc(tokensText(t.usage))}">🔢 ${tokShort(tokTotal(t.usage))} tokens</span>` : ''; // STORE: the task's tokens so far (draft, approve, rework)
   // V3.6.1: the EFFORT menu beside the model — AUTO (the model's own; Opus = high) · Low · Medium · High · Extra high · Max. Same precedence as the model.
   let officeEffort = '', effortTouched = false;
   P_.effort.innerHTML = `<option value="">AUTO</option>` + EFFORT_KEYS.map(k => `<option value="${k}">${EFFORT_NAME[k].toUpperCase()}</option>`).join('');
@@ -558,8 +560,9 @@ export function initTasks(ctx) {
     if (!live || polling) return; polling = true;
     if (usageDue || ++pollN % 5 === 0) { usageDue = false; pollUsage(); }
     try {
-      const [rl, tl, al, trg] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json()), fetch(API + '/approvals').then(r => r.json()).catch(() => null), fetch(API + '/triggers').then(r => r.json()).catch(() => null)]);
+      const [rl, tl, al, trg, tgs] = await Promise.all([fetch(API + '/routines').then(r => r.json()), fetch(API + '/tasks').then(r => r.json()), fetch(API + '/approvals').then(r => r.json()).catch(() => null), fetch(API + '/triggers').then(r => r.json()).catch(() => null), fetch(API + '/telegram').then(r => r.json()).catch(() => null)]);
       if (trg && Array.isArray(trg.triggers)) setTriggers(trg); // STORE spec 0004
+      setTelegram(tgs); // STORE spec 0005
       if (Array.isArray(rl.routines)) setRoutines(rl.routines);
       if (al && Array.isArray(al.rules)) setApprovals(al);
       if (Array.isArray(tl)) for (const st of tl) reconcile(st);
@@ -578,9 +581,10 @@ export function initTasks(ctx) {
       else if (st.state !== 'done') { spawnEmote(R[t.agent], st.routine ? '⏱' : st.dueAt ? '⏱' : '📋'); if (st.routine) feedPush(R[t.agent], '⏱', `Routine fired: ${t.title}${t.late ? ' (late — was due ' + timeStr(t.due) + ')' : ''}`); else if (st.trigger) feedPush(R[t.agent], '🛍', `Store event: ${t.title}`); else if (st.dueAt) feedPush(R[t.agent], '⏱', `Scheduled task fired: ${t.title}`); }
       touch(t, 'added');
     }
+    if (st.usage) t.usage = st.usage; // STORE: tokens so far, whatever the state
     apply(t, st);
   }
-  function copyResult(t, st) { t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.draft = st.draft; t.approved = !!st.approved; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
+  function copyResult(t, st) { t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.draft = st.draft; t.approved = !!st.approved; t.usage = st.usage; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
     t.actions = st.actions; t.actionsRead = st.actionsRead; t.actionsWhy = st.actionsWhy; t.gateDenied = st.gateDenied; t.gateFailed = !!st.gateFailed; // STORE spec 0001
     t.autoApproved = st.autoApproved; t.autoWhy = st.autoWhy; // STORE spec 0002: sent by rule, or why it waits
     t.runDenied = st.runDenied; t.runGateFailed = !!st.runGateFailed; } // STORE spec 0003: what the read-only gate blocked while drafting or running
@@ -651,7 +655,7 @@ export function initTasks(ctx) {
     }
   }
   function askApproval(t) { // D1: the draft lands in the chat with APPROVE / REJECT and the agent stands and waves
-    chatPush(t.agent, { who: 'file', icon: '📝', name: slug(t.title) + '.md', meta: `draft · waiting for your OK · ${timeStr(t.changedAt)} · click to view`, content: t.draft || t.result });
+    chatPush(t.agent, { who: 'file', icon: '📝', name: slug(t.title) + '.md', meta: `draft · waiting for your OK · ${timeStr(t.changedAt)}${t.usage?.runs ? ' · ' + tokensText(t.usage).slice(3) : ''} · click to view`, content: t.draft || t.result });
     const rd = readOf(t); // STORE spec 0001: the card lists the actions; an unreadable list locks APPROVE
     chatPush(t.agent, { who: 'appr', text: t.ask || `"${t.title}" is ready — approve to send it, reject to tell me what to change.`, pending: true, live: true, mock: actionsMock(t), locked: !rd.ok, lockWhy: rd.why });
     feedPush(R[t.agent], '⏸', `Waiting for your OK: ${t.title}`);
@@ -680,7 +684,7 @@ export function initTasks(ctx) {
       const r = await fetch(`${API}/tasks/${t.sid}/${feedback ? 'revise' : 'run'}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(feedback ? { feedback } : {}) });
       if (!r.ok) throw new Error((await r.json()).error || r.statusText);
       const st = await r.json();
-      t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
+      t.result = st.result; t.error = !!st.error; t.read = st.read || []; t.note = st.note; t.tools = st.tools || []; t.used = st.used || []; t.usage = st.usage; if (st.modelUsed) { t.modelUsed = st.modelUsed; t.modelFrom = st.modelFrom; t.effortUsed = st.effortUsed || ''; t.effortFrom = st.effortFrom; }
       usageDue = true;
       if (t.tools.length && onTools) onTools(t.agent, t.tools); // the connectors the agent really pulled on light up
       if (brain && !t.error) fetch(API + '/brain').then(r => r.json()).then(g => brain.setGraph(g)).catch(() => {}); // the new note joins the graph
@@ -704,13 +708,17 @@ export function initTasks(ctx) {
       const mode = panel.querySelector('.tp-mode');
       if (mode) { mode.hidden = false; mode.textContent = 'LIVE · ' + (h.backend === 'anthropic-sdk' ? 'CLAUDE API' : 'CLAUDE'); mode.classList.add('live'); mode.title = `${h.name} · ${h.backend} · ${modelName(h.model)} by default · brain: ${h.brain}`; }
       if (brain) { try { brain.setGraph(await (await fetch(API + '/brain')).json()); } catch {} }
+      // STORE (25 Oct 2026): a live office shows only real work — the demo's seeded morning and invented tasks go, DONE counts real ones
+      for (let i = tasks.length - 1; i >= 0; i--) if (!tasks[i].live) tasks.splice(i, 1);
+      for (const k of DEPT_KEYS) doneCount[k] = 0;
       const list = await (await fetch(API + '/tasks')).json();
       for (const st of list) {
         if (!agentOf(st.agent)) continue;
         if (st.state === 'done') {
           const t = mk({ agent: st.agent, title: st.title, text: st.text, plan: st.plan, by: 'you', live: true, sid: st.id, state: 'done',
             doneAt: st.doneAt, changedAt: st.doneAt, addedAt: st.addedAt, result: st.result, read: st.read, note: st.note, tools: st.tools || [], used: st.used || [], error: !!st.error, last: 'done',
-            approved: !!st.approved, actions: st.actions, gateDenied: st.gateDenied, gateFailed: !!st.gateFailed, autoApproved: st.autoApproved, runDenied: st.runDenied, runGateFailed: !!st.runGateFailed }); // STORE spec 0001/0002: what went out, and by which rule, shows on reload too
+            approved: !!st.approved, actions: st.actions, gateDenied: st.gateDenied, gateFailed: !!st.gateFailed, autoApproved: st.autoApproved, runDenied: st.runDenied, runGateFailed: !!st.runGateFailed, usage: st.usage }); // STORE spec 0001/0002: what went out, and by which rule, shows on reload too · its tokens
+          if (st.doneAt >= new Date().setHours(0, 0, 0, 0)) doneCount[t.dept]++; // DONE on the pod: real tasks finished today
           if (st.team) syncTeam(t, st, true);
           deliver(t);
         } else reconcile(st); // next, doing (the server may be running it), waiting for your OK, scheduled for a date — pick it up again
@@ -770,11 +778,20 @@ export function initTasks(ctx) {
   let trigDoc = { triggers: [], shopify: null };
   function setTriggers(doc) { const was = JSON.stringify(trigDoc); trigDoc = { triggers: doc.triggers || [], shopify: doc.shopify || null, problems: doc.problems || [] }; if (JSON.stringify(trigDoc) !== was && filter === 'sched') render(true); }
   const ago = ms => ms ? span(Date.now() - ms) + ' ago' : 'not yet';
+  // STORE (spec 0005): the Telegram line — the pairing code until the owner pairs, then who it is paired with
+  let tgDoc = null;
+  function setTelegram(doc) { const was = JSON.stringify(tgDoc); tgDoc = doc && (doc.on || doc.configured) ? doc : null; if (JSON.stringify(tgDoc) !== was && filter === 'sched') render(true); }
+  function telegramHTML() {
+    if (!tgDoc) return '';
+    const set = (tgDoc.bots || []).filter(b => b.set), bad = set.filter(b => b.problem);
+    const line = !tgDoc.on ? 'bots set but not started (restart the office)' : !tgDoc.paired ? (tgDoc.code ? `send <b>/start ${esc(tgDoc.code)}</b> to any of your bots to pair them with your Telegram` : 'pairing code expired — a new one shows within a minute') : `paired with ${esc(tgDoc.owner || 'you')} · ${set.length} bot${set.length === 1 ? '' : 's'}${tgDoc.group ? ' · boardroom' : ''}${tgDoc.reminders ? ` · ${tgDoc.reminders} reminder${tgDoc.reminders > 1 ? 's' : ''}` : ''}${tgDoc.goals ? ` · ${tgDoc.goals} goal${tgDoc.goals > 1 ? 's' : ''} running` : ''}`;
+    return `<div class="tp-row sched tg"><span class="tp-st sched">📱</span><div class="tp-body"><div class="tp-t">TELEGRAM</div><div class="tp-m">${line}${bad.length ? ` · <span class="tp-amber">${bad.map(b => esc(b.role + ': ' + b.problem)).join(' · ')}</span>` : ''}</div></div></div>`;
+  }
   function triggersHTML() {
     const s = trigDoc.shopify, f = getFocused(), list = trigDoc.triggers.filter(t => !f || f === 'brain' || t.dept === f);
-    if (!s?.on && !list.length) return '';
+    if (!s?.on && !list.length) return telegramHTML();
     const line = !s?.on ? 'not connected: add "shopify" to office.config.local.json' : s.problem ? `<span class="tp-amber">${esc(s.problem)}</span>` : `${esc(s.shop)} · checked ${ago(s.lastOk)} · every ${s.poll} min · read-only`;
-    return `<div class="tp-row sched trig head" data-trig="*"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">SHOPIFY</div><div class="tp-m">${line}</div></div></div>` +
+    return telegramHTML() + `<div class="tp-row sched trig head" data-trig="*"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">SHOPIFY</div><div class="tp-m">${line}</div></div></div>` +
       list.map(t => `<div class="tp-row sched trig${t.paused ? ' paused' : ''}" data-trig="${esc(t.id)}" data-dept="${t.dept}"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">${esc(t.title)}</div><div class="tp-m">${esc(t.desc)} · ${agentOf(t.agent)?.name || esc(t.agent)} · ${t.today} of ${t.dailyCount} today${t.held ? ` · <span class="tp-amber">${t.held} held (cap reached)</span>` : ''}${t.needsOk ? ' · waits for your OK' : ' · read-only'}</div>
       <div class="tp-act"><button class="run" data-tact="run">RUN NOW</button><button data-tact="${t.paused ? 'resume' : 'pause'}">${t.paused ? 'RESUME' : 'PAUSE'}</button><button data-tact="delete">DELETE</button></div></div><span class="tp-ago">${t.paused ? 'PAUSED' : 'ON'}</span></div>`).join('');
   }
@@ -1027,6 +1044,7 @@ export function initTasks(ctx) {
       } else {
         const nx = agentTasks(id, 'next').sort((a, b) => a.addedAt - b.addedAt)[0];
         if (nx) { start(nx, now); r.nextBrainAt = null; }
+        else if (live) continue; // STORE: live, the Brain does not invent work — an idle desk waits for real tasks
         else if (!r.nextBrainAt) r.nextBrainAt = now + 6000 + Math.random() * 16000;
         else if (now > r.nextBrainAt) { r.nextBrainAt = null; brainSend(id); }
       }
@@ -1082,5 +1100,5 @@ export function initTasks(ctx) {
   const calendar = initCalendar({ tasks, routines, agentOf, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, create: createScheduled, createRoutine: createRoutineAt, cancelTask: cancelScheduled, rtAct, openAgent: (id, tab) => openAgent && openAgent(id, tab), esc, isLive: () => live, officeModel: () => officeModel, MODEL_KEYS, modelName, business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
   return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, createScheduled, cancelScheduled,
            handleChat, addTask, revise, rowHTML, setDept, tasks, panelWidth: () => panel.offsetWidth, isLive: () => live,
-           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, setTriggers, triggers: () => trigDoc, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
+           routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, setTriggers, triggers: () => trigDoc, setTelegram, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
 }

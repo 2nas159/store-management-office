@@ -27,23 +27,46 @@ export function tile(name) {
   return c.toDataURL('image/png');
 }
 
+// STORE (25 Oct 2026): a machine with 60+ servers drew 60+ logos in the bar and ~19 per pod. The office shows the ones that
+// matter: at most TOP_MAX connected servers in the bar (the rest behind a "+N more" pill that names them, not-connected ones
+// included) and at most DOCK_MAX per department. Ranked by: the department's agents name it in their tools · office.config.json
+// wires it to chosen departments (not every pod) · it is one of a store's core tools. One logo per tool (two Gmails → one).
+export const TOP_MAX = 10, DOCK_MAX = 5;
+const CORE = ['shopify', 'gmail', 'googlecalendar', 'googledrive', 'chrome', 'slack', 'canva', 'notion', 'stripe', 'xero', 'klaviyo', 'quickbooks'];
+const family = s => { const n = norm(s.key || '') + ' ' + norm(s.name); return CORE.find(c => n.includes(c)) || norm(s.name).replace(/^plugin[a-z]*?(smallbusiness|marketing|design)?/, ''); };
+
 export function fromSummary(m, agents) {
-  const byDept = Object.fromEntries(DEPT_KEYS.map(k => [k, []]));
-  const logos = {}, status = {}, shared = {}, names = {}, off = [];
-  for (const s of m.servers || []) {
-    const key = s.key || s.id;
-    logos[key] = MCP_LOGOS[key] || { name: s.name, img: tile(s.name) };
-    names[key] = s.name;
-    status[key] = s.denied ? 'denied' : (s.allowed ? s.status : 'denied');
-    // only a usable server is wired to pods; the rest sit in the strip, grey, unwired — nothing flows
-    if (status[key] !== 'connected') { off.push(key); continue; }
-    for (const d of s.depts || []) if (byDept[d] && !byDept[d].includes(key)) byDept[d].push(key);
-    if ((s.depts || []).length >= 4) shared[key] = INK[key] || INK[norm(s.name)] || inkOf(s.name);
+  const logos = {}, names = {};
+  for (const s of m.servers || []) { // a plugin's server wears the logo of the tool it wraps, and its name without "plugin:…:"
+    const key = s.key || s.id, name = String(s.name).replace(/^plugin:[^:]+:/, '');
+    logos[key] = MCP_LOGOS[key] || MCP_LOGOS[family(s)] || { name, img: tile(name) }; names[key] = name;
   }
+  return { live: true, logos, names, off: [], ...choose(m.servers || [], agents), servers: m.servers || [], tools: !!m.tools, web: !!m.web };
+}
+
+/** servers (GET /api/mcp) + the roster → which logos the bar and each pod show: { byDept, shared, status, more, agentTools }. No DOM. */
+export function choose(servers, agents) {
+  const byDept = Object.fromEntries(DEPT_KEYS.map(k => [k, []]));
+  const status = {}, shared = {};
+  const all = servers.map(s => ({ s, key: s.key || s.id }));
+  for (const { s, key } of all) status[key] = s.denied ? 'denied' : (s.allowed ? s.status : 'denied');
   const agentTools = agents ? Object.fromEntries(agents.map(a => [a.id, (a.tools || []).map(t => {
-    const n = norm(t); const hit = (m.servers || []).find(s => s.key === n || norm(s.name) === n || s.id === t); return hit ? (hit.key || hit.id) : n;
+    const n = norm(t); const hit = servers.find(s => s.key === n || norm(s.name) === n || s.id === t || family(s) === n); return hit ? (hit.key || hit.id) : n;
   })])) : null;
-  return { live: true, byDept, logos, status, shared, names, off, agentTools, servers: m.servers || [], tools: !!m.tools, web: !!m.web };
+  // only a usable server is wired to pods; one per tool family, the one with a real logo first
+  const usable = all.filter(x => status[x.key] === 'connected').sort((a, b) => (MCP_LOGOS[b.key] ? 1 : 0) - (MCP_LOGOS[a.key] ? 1 : 0));
+  const seen = new Set(), pick = usable.filter(x => { const f = family(x.s); if (seen.has(f)) return false; seen.add(f); return true; });
+  const wants = (key, dept) => agents ? agents.filter(a => (!dept || a.department === dept) && (agentTools[a.id] || []).includes(key)).length : 0;
+  const core = x => { const i = CORE.indexOf(family(x.s)); return i === 0 ? 1000 : i < 0 ? 0 : 40 - i * 3; }; // the store fork: Shopify, the store itself, is on every pod it is wired to
+  const chosen = x => (x.s.depts || []).length && (x.s.depts || []).length < DEPT_KEYS.length ? 50 : 0;
+  const rank = (x, dept) => wants(x.key, dept) * 100 + chosen(x) + core(x);
+  const top = [...pick].sort((a, b) => rank(b) - rank(a)).slice(0, TOP_MAX);
+  for (const d of DEPT_KEYS) byDept[d] = top.filter(x => (x.s.depts || []).includes(d)).sort((a, b) => rank(b, d) - rank(a, d)).slice(0, DOCK_MAX).map(x => x.key);
+  for (const { key, s } of top) if (DEPT_KEYS.filter(d => byDept[d].includes(key)).length >= 4) shared[key] = INK[key] || INK[norm(s.name)] || inkOf(s.name);
+  const shown = new Set(Object.values(byDept).flat()); // the bar draws what the pods are wired to
+  const plain = s => String(s.name).replace(/^plugin:[^:]+:/, '');
+  const more = { connected: usable.filter(x => !shown.has(x.key)).map(x => plain(x.s)), off: all.filter(x => status[x.key] !== 'connected').map(x => `${plain(x.s)} (${status[x.key]})`) };
+  return { byDept, status, shared, more, agentTools };
 }
 
 export async function loadConnectors({ timeout = 25000 } = {}) {

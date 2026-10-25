@@ -56,6 +56,10 @@ import * as actions from './actions.mjs'; // STORE (24 Oct 2026): outbound actio
 import * as approvals from './approvals.mjs'; // STORE (24 Oct 2026): auto approve rules (spec 0002)
 import * as shopify from './shopify.mjs'; // STORE (25 Oct 2026): the office's own read-only view of the store (spec 0004)
 import * as triggers from './triggers.mjs'; // STORE (25 Oct 2026): store events start trigger tasks (spec 0004)
+import * as telegram from './telegram.mjs'; // STORE (25 Oct 2026): the team on Telegram (spec 0005)
+import { createTeam } from './team.mjs';
+import * as meter from './meter.mjs'; // STORE (25 Oct 2026): tokens per task, per chat turn and per Telegram message
+import { fromRun, add as addTokens, tokensText } from './src/tokens.js';
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
 import { parseWhen, describe, valid as validWhen, untilText } from './src/when.js';
 
@@ -113,7 +117,7 @@ async function getUsage(force) {
   usageCache = { at: Date.now(), value: v, stale: false };
   return v;
 }
-function bumpUsage(u) { if (!u) return; Object.assign(USTATE, usage.record(USTATE, u)); usage.saveState(DATA, USTATE); usageCache.stale = true; }
+function bumpUsage(u, mu) { if (u || mu) meter.charge(fromRun(u, mu)); if (!u) return; Object.assign(USTATE, usage.record(USTATE, u)); usage.saveState(DATA, USTATE); usageCache.stale = true; }
 const slug = t => String(t).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
 
 /* ---------- ask Claude ---------- */
@@ -148,7 +152,7 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
   const env = { ...process.env }; delete env.CLAUDECODE; // the CLI refuses to nest inside another Claude Code session
   return new Promise((resolve, reject) => {
     const p = spawn('claude', args, { cwd: CLI_CWD, env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '', text = '', used = [], gotResult = false, usageOut = null, modelUsed = null; const calls = [];
+    let out = '', err = '', text = '', used = [], gotResult = false, usageOut = null, modelUsageOut = null, modelUsed = null; const calls = [];
     const fail = e => { e.calls = calls; reject(e); };
     const timer = setTimeout(() => { p.kill('SIGKILL'); fail(new Error(`Claude took longer than ${timeout / 1000} s`)); }, timeout);
     const feed = line => {
@@ -160,7 +164,7 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
         const c = calls.find(x => x.id === b.tool_use_id); if (!c) continue;
         c.ok = !b.is_error; if (b.is_error) c.error = (typeof b.content === 'string' ? b.content : Array.isArray(b.content) ? b.content.map(x => x.text || '').join(' ') : '').trim().slice(0, 500) || 'the tool returned an error';
       }
-      if (j.type === 'result') { gotResult = true; text = String(j.result || '').trim(); if (j.is_error && !text) text = ''; usageOut = j.usage || null; modelUsed = ranOn(j.modelUsage, model); }
+      if (j.type === 'result') { gotResult = true; text = String(j.result || '').trim(); if (j.is_error && !text) text = ''; usageOut = j.usage || null; modelUsageOut = j.modelUsage || null; modelUsed = ranOn(j.modelUsage, model); }
     };
     p.stdout.on('data', d => { out += d; let i; while ((i = out.indexOf('\n')) >= 0) { feed(out.slice(0, i)); out = out.slice(i + 1); } });
     p.stderr.on('data', d => { err += d; });
@@ -169,7 +173,7 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
       clearTimeout(timer); feed(out);
       if (code !== 0 && !gotResult) return fail(new Error(`claude exited ${code}${err ? ': ' + err.trim().slice(0, 300) : ''}`));
       if (!gotResult) { try { text = String(JSON.parse(out).result || '').trim(); } catch { text = out.trim(); } }
-      bumpUsage(usageOut);
+      bumpUsage(usageOut, modelUsageOut); // STORE: modelUsage is the whole run (Chrome's helper too)
       resolve({ text, tools: used, calls, usage: usageOut, modelId: modelUsed });
     });
   });
@@ -438,14 +442,39 @@ async function approveRun(task, strict = false) { // strict (spec 0002): an auto
   if (r.gateFailed) console.warn(`  ⚠ ${task.id} an MCP call ran with no gate decision on record — check what went out`);
   console.log(`  ↳ ${task.id} actions: ${r.actions.map(x => x.id + ' ' + actions.STATUS_TEXT[x.outcome.status]).join(' · ')}`);
 }
+// the owner's APPROVE or REJECT on a waiting draft — the page and Telegram take this one path (STORE spec 0005). → { status, body }
+async function ownerDecides(id, kind, note = '') {
+  const task = load().find(t => t.id === id);
+  if (!task) return { status: 404, body: { error: 'no such task' } };
+  if (task.state !== 'waiting') return { status: 400, body: { error: 'this task is not waiting for your OK' } };
+  if (kind === 'approve') { // STORE spec 0001: an unreadable list locks APPROVE; an empty one is done with no Claude run (AC-4, AC-7, AC-12)
+    const rd = actions.readOf(task);
+    if (!rd.ok) return { status: 400, body: { error: `the actions in this draft could not be read: ${rd.why}. Send it back with REJECT.` } };
+    if (!task.actions.length) {
+      const list = load(); const t = list.find(x => x.id === task.id);
+      Object.assign(t, { result: (t.draft || t.result) + '\n\n---\nAFTER YOUR OK\nNothing went out, this draft had no outbound actions.', approved: true, approvedAt: Date.now(), error: false }); delete t.ask;
+      finishApproved(t); save(list); await rebuildGraph();
+      console.log(`✅ ${t.id} approved — nothing goes out, done (note: ${t.note})`);
+      team?.notify(t);
+      return { status: 200, body: { ok: true, id: t.id, state: 'done' } };
+    }
+    const list = load(); const t = list.find(x => x.id === task.id); Object.assign(t, { state: 'doing', startedAt: Date.now(), approving: true }); delete t.ask; save(list); // off WAITING now: a second APPROVE while this one is queued is refused, never a second send
+  }
+  console.log(`${kind === 'approve' ? '✅' : '↩'} ${task.id} ${kind === 'approve' ? 'approved — ' + agentName(task.agent) + ' is sending' : 'sent back: ' + note.slice(0, 80)}`);
+  team?.decided(task.id, kind, note).catch(() => {}); // the Telegram card loses its buttons; a sent-back draft gets a new card when reworked
+  enqueue(() => runServerTask(task.id, kind === 'approve' ? { approve: true } : { feedback: note || 'Not this. Rework it.' }))
+    .then(t => { if (kind === 'reject' && note && t && !t.error) { const a = AGENTS.find(x => x.id === t.agent); return learn.classify(ask, a, t, note).then(v => { const r = learn.record(BRAIN, a, t, note, v); console.log(`  ↳ ${a.name} ${r.standing ? 'learned a rule' : 'noted a one-off'}: ${r.line.slice(0, 100)}`); }); } })
+    .catch(e => console.warn('approval:', e.message));
+  return { status: 200, body: { ok: true, id: task.id, state: 'doing' } };
+}
 function finishApproved(task) { delete task.approving; task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); }
 async function runServerTask(id, { feedback, approve, strict = false } = {}) {
   let list = load(); const task = list.find(t => t.id === id); if (!task) return null;
   task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; if (approve) task.approving = true; save(list); // approving: a restart mid-send is closed out at startup (AC-15)
-  try {
+  const { usage: spent } = await meter.measure(async () => { try { // STORE: this run's tokens (draft, approve or rework) add to the task's total
     if (approve) { await approveRun(task, strict); finishApproved(task); await rebuildGraph(); }
     else {
-      const out = await run(task, feedback, task.needsOk ? 'draft' : 'routine');
+      const out = await run(task, feedback, task.needsOk ? 'draft' : task.asked ? undefined : 'routine'); // STORE spec 0005: a task the owner gave a bot runs like a bar task
       task.result = out.result;
       Object.assign(task, { read: out.read, tools: [...new Set([...(task.tools || []), ...out.tools])], used: [...new Set([...(task.used || []), ...out.used])], skills: out.skills, error: false, modelUsed: out.modelUsed, modelFrom: out.modelFrom, modelId: out.modelId, effortUsed: out.effortUsed, effortFrom: out.effortFrom, ...(out.team ? { team: out.team } : {}) });
       if (task.needsOk) { // STORE spec 0001: the draft's actions block → actions + actionsRead; only the fence leaves the draft
@@ -463,10 +492,12 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
     }
   } catch (e) {
     delete task.approving; Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });
-  }
+  } });
+  task.usage = addTokens(task.usage, spent);
   list = load(); const i = list.findIndex(t => t.id === task.id); if (i >= 0) list[i] = task; save(list);
-  console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : task.state === 'doing' ? '⚡' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : task.state === 'doing' ? 'sending by rule' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
+  console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : task.state === 'doing' ? '⚡' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : task.state === 'doing' ? 'sending by rule' : 'done'} (${task.result.length} chars, ${tokensText(task.usage).slice(3)}${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
   if (!approve && task.state === 'doing' && task.autoApproved) enqueue(() => runServerTask(task.id, { approve: true, strict: true })); // STORE spec 0002: the same gated run as APPROVE, strict
+  team?.notify(task).catch(e => console.warn('telegram:', e.message)); // STORE spec 0005: a draft waiting → the secretary's card; done → the lead's chat
   return task;
 }
 /* ---------- STORE (spec 0004): Shopify event triggers — the office reads the store, events start trigger tasks ---------- */
@@ -522,6 +553,7 @@ function triggersChat(a, t) { // a lead: "triggers" · "pause|resume … trigger
 function tickRoutines() {
   let list; try { list = loadRoutines(); } catch (e) { console.warn('routines:', e.message); return; }
   for (const { routine, due, late } of routines.due(list, RSTATE)) fire(routine, { due, late });
+  team?.tick().catch(e => console.warn('telegram:', e.message)); // STORE spec 0005: reminders, the morning and weekly briefs, the pairing code
   tickScheduled();
 }
 function tickScheduled() { // V3.2.1: a task scheduled for a date fires on its minute — late (once) if the office was off
@@ -585,6 +617,50 @@ async function routinesChat(a, text) {
   return { reply: `Done. ${r.desc.charAt(0).toUpperCase() + r.desc.slice(1)}, ${who}.${made.guessed ? ` I took "${made.guessed}" as ${r.when.at}; say a time to change it.` : ''} ${r.needsOk ? 'Anything to send waits for your OK first.' : 'It only reads, so it will not wait for you.'} Next run ${untilText(r.nextAt)}. Say "routines" to see the list, "pause ${r.title.toLowerCase()}" to stop it.`, routine: r };
 }
 
+// an agent's chat turn — the page and the Telegram lead bots take this one path (STORE spec 0005)
+async function chatReply(a, text, history) {
+  if (!onboard.active(DATA, a.department)) { // V3.5: "every weekday at 8am, …" · "routines" · "pause …" · "run … now" — unless the lead is mid-interview
+    const tc = triggersChat(a, text); // STORE spec 0004: "triggers", "pause … trigger"
+    if (tc) return { reply: tc.reply, read: [], tools: [], interview: false, triggers: true };
+    const ac = await approvalsChat(a, text); // STORE spec 0002: auto approve rules, before routines ("pause … rule" is a rule)
+    if (ac) return { reply: ac.reply, read: [], tools: [], interview: false, approvals: true };
+    const rc = await routinesChat(a, text);
+    if (rc) return { reply: rc.reply, read: [], tools: [], interview: false, routine: rc.routine || null, routines: true };
+  }
+  if (leadOf(a.department).id === a.id) { // the department lead can run the set-up interview
+    refreshSkills();
+    const o = await onboard.handle(text, { dept: a.department, deptName: DEPTS[a.department].name, lead: a, agents: AGENTS.filter(x => x.department === a.department),
+      connected: mcp.summary().servers?.filter(x => x.status === 'connected').map(x => x.name || x.key) || [], brainPath: BRAIN, dataDir: DATA, ask, business: cfg.name, afterWrite: refreshSkills });
+    if (o) { if (o.wrote) console.log(`★ ${a.name} set up ${DEPTS[a.department].name}: ${o.wrote.briefs.length} briefs${o.wrote.skill ? ', skill ' + o.wrote.skill.name : ''}`); return { reply: o.reply, read: [], tools: [], interview: !o.wrote, setup: setupMap() }; }
+  }
+  const r = await chat(a.id, text, history);
+  return { ...r, interview: false };
+}
+
+/* ---------- STORE (spec 0005): the team on Telegram — eight bots, one owner, the office's own paths ---------- */
+const TG = telegram.settings(cfg); for (const w of TG.problems) console.warn('telegram:', w);
+let team = null;
+async function teamTask({ dept, text, title, needsOk, goal, by = 'telegram' }) { // a task the owner gave a bot (or the CEO planned), run on the server
+  const { value: r, usage: routed } = await meter.measure(() => route(dept, text)); // STORE: routing is part of the task's tokens
+  const task = { id: nid(), dept, agent: r.agent, title: title || r.title, text, plan: r.plan, eta: r.eta, why: r.why, state: 'next', addedAt: Date.now(), by, asked: true, needsOk: typeof needsOk === 'boolean' ? needsOk : r.needsOk, ...(goal ? { goal } : {}), ...(routed.runs ? { usage: routed } : {}) };
+  const list = load(); list.push(task); save(list);
+  console.log(`📱 ${task.id} → ${task.agent}: ${task.title} (${by}${task.needsOk ? ', a draft' : ''})`);
+  enqueue(() => runServerTask(task.id));
+  return task;
+}
+function teamContext() {
+  return { cfg, tg: TG, dataDir: DATA, brainPath: BRAIN, AGENTS, DEPTS, leadOf, actions, approvals, triggers, ask, measure: meter.measure,
+    tasks: () => load(), task: id => load().find(t => t.id === id), addTask: teamTask,
+    approve: async id => { const r = await ownerDecides(id, 'approve'); return r.status === 200 ? { ok: true, state: r.body.state } : { ok: false, error: r.body.error }; },
+    reject: async (id, note) => { const r = await ownerDecides(id, 'reject', note); return r.status === 200 ? { ok: true } : { ok: false, error: r.body.error }; },
+    leadChat: async (a, text, history) => (await chatReply(a, text, (history || []).map(h => ({ who: h.who === 'owner' ? 'user' : 'agent', text: h.text })))).reply,
+    run: async ({ system, user, gated, model }) => { const md = normModel(model) || cfg.model; const o = gated ? await askFor('routine', path.join(GATES, `tg-${nid()}-run`), system, user, { model: md, maxTokens: 2000 }) : await askX(system, user, { model: md, maxTokens: 2000 }); return { text: o.text, runDenied: o.runDenied || [] }; },
+    notes: text => { const index = vaultIndex(); return (businessContext(index) + '\n\n' + contextText(index, relevantNotes(index, null, text, 3))).slice(0, 5000); },
+    toolsText: () => mcp.promptText([]), makeRoutine, parseWhen, describeWhen: describe, triggerState: () => TSTATE,
+    store: () => SHOP.on ? { line: `${SHOP.shop}${TSTATE.problem ? ' · ' + TSTATE.problem : TSTATE.lastOk ? ' · checked ' + new Date(TSTATE.lastOk).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''} · trigger tasks today: ${Object.values(TSTATE.counts || {}).reduce((s, n) => s + n, 0)}` } : null,
+    log: s => console.log(s) };
+}
+
 /* ---------- http ---------- */
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const body = req => new Promise((resolve, reject) => { let s = ''; req.on('data', d => { s += d; }); req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } }); });
@@ -640,6 +716,7 @@ const server = http.createServer(async (req, res) => {
       if (b.effort !== undefined) patch.effort = normEffort(b.effort) || '';
       editRoutine(r.id, patch); return json(res, 200, { ok: true, routines: loadRoutines() });
     }
+    if (url.pathname === '/api/telegram' && req.method === 'GET') return json(res, 200, team ? { ...team.status(), problems: TG.problems } : { on: false, configured: TG.on, problems: TG.problems }); // STORE spec 0005
     if (url.pathname === '/api/triggers' && req.method === 'GET') return json(res, 200, triggersOut()); // STORE spec 0004
     const tm = url.pathname.match(/^\/api\/triggers\/([^/]+)(?:\/(pause|resume|run))?$/);
     if (tm) {
@@ -674,56 +751,38 @@ const server = http.createServer(async (req, res) => {
       const dueAt = at ? (typeof at === 'number' ? at : Date.parse(at)) : null; // V3.2.1: a task for a date
       if (at && !(dueAt > 0)) return json(res, 400, { error: 'at must be a time (ms or ISO)' });
       if (dueAt && dueAt < Date.now() - 60000) return json(res, 400, { error: 'that time has passed — pick one that is still ahead' });
-      const r = await route(dept, String(text).trim());
+      const { value: r, usage: routed } = await meter.measure(() => route(dept, String(text).trim())); // STORE: routing is part of the task's tokens
       const asTeam = TEAMS.enabled && (team === true || teams.intent(text)); // V3.2 (16 Sep): TEAM in the bar, or "as a team" in the sentence → the lead owns it and splits it
       const task = { id: nid(), dept, agent: asTeam ? leadOf(dept).id : r.agent, title: r.title, text: String(text).trim(), plan: r.plan, eta: r.eta, why: asTeam ? `team — ${leadOf(dept).name} splits it across the desks` : r.why, state: 'next', addedAt: Date.now(), by: 'you', model: normModel(model) || undefined, effort: normEffort(effort) || undefined, // model/effort: set on this task (beats routine, agent, office)
-        team: asTeam ? { lead: leadOf(dept).id, asked: team === true ? 'you' : 'text' } : undefined };
+        team: asTeam ? { lead: leadOf(dept).id, asked: team === true ? 'you' : 'text' } : undefined, ...(routed.runs ? { usage: routed } : {}) };
       if (dueAt) { task.state = 'scheduled'; task.dueAt = dueAt; task.needsOk = r.needsOk; } // waits for its minute; needsOk decides whether it then waits for the OK
       const list = load(); list.push(task); save(list);
       console.log(`+ ${task.id} → ${task.agent}: ${task.title}${asTeam ? ' (team)' : ''}${dueAt ? ' · scheduled ' + untilText(dueAt) : ''}`);
       return json(res, 200, task);
     }
     const m = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(run|revise|approve|reject))?$/);
-    if (m && req.method === 'POST' && (m[2] === 'approve' || m[2] === 'reject')) { // D1: the owner's tick on a routine's draft
-      const task = load().find(t => t.id === m[1]);
-      if (!task) return json(res, 404, { error: 'no such task' });
-      if (task.state !== 'waiting') return json(res, 400, { error: 'this task is not waiting for your OK' });
-      if (m[2] === 'approve') { // STORE spec 0001: an unreadable list locks APPROVE; an empty one is done with no Claude run (AC-4, AC-7, AC-12)
-        const rd = actions.readOf(task);
-        if (!rd.ok) return json(res, 400, { error: `the actions in this draft could not be read: ${rd.why}. Send it back with REJECT.` });
-        if (!task.actions.length) {
-          const list = load(); const t = list.find(x => x.id === task.id);
-          Object.assign(t, { result: (t.draft || t.result) + '\n\n---\nAFTER YOUR OK\nNothing went out, this draft had no outbound actions.', approved: true, approvedAt: Date.now(), error: false }); delete t.ask;
-          finishApproved(t); save(list); await rebuildGraph();
-          console.log(`✅ ${t.id} approved — nothing goes out, done (note: ${t.note})`);
-          return json(res, 200, { ok: true, id: t.id, state: 'done' });
-        }
-        const list = load(); const t = list.find(x => x.id === task.id); Object.assign(t, { state: 'doing', startedAt: Date.now(), approving: true }); delete t.ask; save(list); // off WAITING now: a second APPROVE while this one is queued is refused, never a second send
-      }
+    if (m && req.method === 'POST' && (m[2] === 'approve' || m[2] === 'reject')) { // D1: the owner's tick on a routine's draft (STORE spec 0005: the same path as Telegram's buttons)
       const { feedback } = m[2] === 'reject' ? await body(req) : {};
-      const note = String(feedback || '').trim();
-      console.log(`${m[2] === 'approve' ? '✅' : '↩'} ${task.id} ${m[2] === 'approve' ? 'approved — ' + agentName(task.agent) + ' is sending' : 'sent back: ' + note.slice(0, 80)}`);
-      enqueue(() => runServerTask(task.id, m[2] === 'approve' ? { approve: true } : { feedback: note || 'Not this. Rework it.' }))
-        .then(t => { if (m[2] === 'reject' && note && t && !t.error) { const a = AGENTS.find(x => x.id === t.agent); return learn.classify(ask, a, t, note).then(v => { const r = learn.record(BRAIN, a, t, note, v); console.log(`  ↳ ${a.name} ${r.standing ? 'learned a rule' : 'noted a one-off'}: ${r.line.slice(0, 100)}`); }); } })
-        .catch(e => console.warn('approval:', e.message));
-      return json(res, 200, { ok: true, id: task.id, state: 'doing' });
+      const r = await ownerDecides(m[1], m[2], String(feedback || '').trim());
+      return json(res, r.status, r.body);
     }
     if (m && req.method === 'POST' && (m[2] === 'run' || m[2] === 'revise')) {
       const list = load(); const task = list.find(t => t.id === m[1]);
       if (!task) return json(res, 404, { error: 'no such task' });
       const { feedback } = m[2] === 'revise' ? await body(req) : {};
       task.state = 'doing'; task.startedAt = Date.now(); save(list);
-      try {
+      const { usage: spent } = await meter.measure(async () => { try {
         const { result, read, tools, used, skills: sk, modelUsed, modelFrom, modelId: ran, effortUsed, effortFrom, team } = await run(task, feedback);
         Object.assign(task, { state: 'done', doneAt: Date.now(), result, read, tools, used, skills: sk, error: false, modelUsed, modelFrom, modelId: ran, effortUsed, effortFrom, ...(team ? { team } : {}) });
         task.note = writeNote(task);
         await rebuildGraph();
       } catch (e) {
         Object.assign(task, { state: 'done', doneAt: Date.now(), result: 'Could not complete this task: ' + e.message, error: true });
-      }
+      } });
+      task.usage = addTokens(task.usage, spent); // STORE: tokens per task
       const l2 = load(); const i = l2.findIndex(t => t.id === task.id); if (i >= 0) l2[i] = task; save(l2);
       console.log(`${task.error ? '✗' : '✓'} ${task.id} ${task.error ? 'failed' : 'done'} (${task.result.length} chars${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
-      json(res, 200, task);
+      json(res, 200, task); team?.notify(task).catch(() => {}); // STORE spec 0005
       if (feedback && !task.error) { // learn from the correction, after the reply is out the door
         const a = AGENTS.find(x => x.id === task.agent);
         learn.classify(ask, a, task, feedback).then(v => { const r = learn.record(BRAIN, a, task, feedback, v); console.log(`  ↳ ${a.name} ${r.standing ? 'learned a rule' : 'noted a one-off'}: ${r.line.slice(0, 100)}`); })
@@ -736,22 +795,8 @@ const server = http.createServer(async (req, res) => {
       const { agent, text, history } = await body(req);
       if (!text || !String(text).trim()) return json(res, 400, { error: 'empty message' });
       const a = AGENTS.find(x => x.id === agent); if (!a) return json(res, 400, { error: 'unknown agent' });
-      if (!onboard.active(DATA, a.department)) { // V3.5: "every weekday at 8am, …" · "routines" · "pause …" · "run … now" — unless the lead is mid-interview
-        const tc = triggersChat(a, String(text).trim()); // STORE spec 0004: "triggers", "pause … trigger"
-        if (tc) return json(res, 200, { reply: tc.reply, read: [], tools: [], interview: false, triggers: true });
-        const ac = await approvalsChat(a, String(text).trim()); // STORE spec 0002: auto approve rules, before routines ("pause … rule" is a rule)
-        if (ac) return json(res, 200, { reply: ac.reply, read: [], tools: [], interview: false, approvals: true });
-        const rc = await routinesChat(a, String(text).trim());
-        if (rc) return json(res, 200, { reply: rc.reply, read: [], tools: [], interview: false, routine: rc.routine || null, routines: true });
-      }
-      if (leadOf(a.department).id === a.id) { // the department lead can run the set-up interview
-        refreshSkills();
-        const o = await onboard.handle(String(text).trim(), { dept: a.department, deptName: DEPTS[a.department].name, lead: a, agents: AGENTS.filter(x => x.department === a.department),
-          connected: mcp.summary().servers?.filter(x => x.status === 'connected').map(x => x.name || x.key) || [], brainPath: BRAIN, dataDir: DATA, ask, business: cfg.name, afterWrite: refreshSkills });
-        if (o) { if (o.wrote) console.log(`★ ${a.name} set up ${DEPTS[a.department].name}: ${o.wrote.briefs.length} briefs${o.wrote.skill ? ', skill ' + o.wrote.skill.name : ''}`); return json(res, 200, { reply: o.reply, read: [], tools: [], interview: !o.wrote, setup: setupMap() }); }
-      }
-      const r = await chat(agent, String(text).trim(), history);
-      return json(res, 200, { ...r, interview: false });
+      const { value, usage: spent } = await meter.measure(() => chatReply(a, String(text).trim(), history)); // STORE: tokens per chat turn
+      return json(res, 200, { ...value, usage: spent });
     }
     json(res, 404, { error: 'not found' });
   } catch (e) { console.error(e); json(res, 500, { error: e.message }); }
@@ -764,6 +809,8 @@ server.listen(cfg.port, () => {
   const rl = loadRoutines(); const nx = rl.filter(r => !r.paused && r.nextAt).sort((a, b) => a.nextAt - b.nextAt)[0];
   console.log(`  routines: ${rl.length} loaded${rl.some(r => r.paused) ? ' (' + rl.filter(r => r.paused).length + ' paused)' : ''}${nx ? ' · next ' + untilText(nx.nextAt) + ' ' + nx.title.toUpperCase() + ' (' + nx.agent + ')' : ''} · ${rlist.path}`);
   setInterval(tickRoutines, 20000); tickRoutines(); // the clock: every 20 s; the first tick catches up anything missed while the office was off (once, marked LATE)
+  if (TG.on && process.env.AO_NO_TELEGRAM === '1') console.log('  telegram: off (AO_NO_TELEGRAM=1)'); // npm run check: the bots stay quiet
+  else if (TG.on) { team = createTeam(teamContext()); team.start(); const st = team.status(); console.log(`  telegram: ${st.bots.filter(b => b.set).map(b => b.role).join(', ')} · ${st.paired ? 'paired with ' + (st.owner || 'the owner') : 'not paired yet: send the code above to any bot'}`); } // STORE spec 0005
   if (SHOP.on && process.env.AO_NO_STORE === '1') console.log('  store: polling off (AO_NO_STORE=1)'); // npm run check starts the office this way: a check never reads the store or starts trigger tasks
   else if (SHOP.on) { setInterval(() => checkStore(), SHOP.poll * 60000); setTimeout(() => checkStore(), 5000); console.log(`  store: ${SHOP.shop} · checked every ${SHOP.poll} min for ${loadTriggers().triggers.length} trigger(s) (read-only)`); } // STORE spec 0004
   console.log(`  agents: 35 (${roster.customised} customised${roster.briefed ? ', ' + roster.briefed + ' briefed' : ''}${roster.files.length ? ' via ' + roster.files.join(' + ') : ''})   tools: ${backend === 'claude-cli' ? 'connected MCP servers' + (cfg.tools?.web === false ? '' : ' + web') + (mcp.browserOn() ? ' + the owner\'s Chrome (' + (mcp.browserState().installed ? 'extension paired' + (mcp.browserState().device ? ': ' + mcp.browserState().device : '') : 'extension NOT paired — run `claude --chrome` once') + ')' : '') : 'none on the API backend'}`);
