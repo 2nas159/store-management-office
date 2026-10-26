@@ -50,7 +50,7 @@
   #sahniMark .by { font-family: var(--ui); font-size: 8px; letter-spacing: .2em; font-weight: 700; color: #8a8a94; }
   #sahniMark .wm { font-size: 14px; }
   body.railLeft #sahniMark { left: calc(min(400px, 92vw) + 18px); bottom: auto; top: 64px; } /* a department in focus docks its chat rail on the left and the licence line sits centred: the mark moves to the top-left of the scene, under the bar (OVERVIEW has moved right) */
-  body.calOpen #sahniMark, body.brainOpen #sahniMark { display: none; } /* the overlays carry their own headers; the licence line still rides over them */
+  body.calOpen #sahniMark, body.brainOpen #sahniMark, body.autoOpen #sahniMark { display: none; } /* the overlays carry their own headers; the licence line still rides over them */
   #licence { position: fixed; left: 50%; transform: translateX(-50%); bottom: 9px; z-index: 60; display: inline-flex; align-items: center; gap: 9px; pointer-events: none; user-select: none;
     font-family: var(--ui); font-size: 9px; letter-spacing: .08em; color: #fff; mix-blend-mode: difference; opacity: .55; white-space: nowrap; }
   #licence .wm { font-size: 10.5px; text-shadow: none; }
@@ -232,8 +232,12 @@
     background: color-mix(in srgb, var(--cream) 94%, transparent); border: 1px solid var(--hairline); border-radius: 99px; padding: 5px 12px;
     transition: all .3s var(--ease);
   }
-  #topCal:hover, body.calOpen #topCal { background: var(--ink); color: var(--cream); border-color: var(--ink); }
-  body.dark #topCal { background: #1B1C21; }
+  #topCal:hover, body.calOpen #topCal, #topAuto:hover, body.autoOpen #topAuto { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+  body.dark #topCal, body.dark #topAuto { background: #1B1C21; }
+  #topAuto { /* STORE (26 Oct 2026, spec 0006): the Automations button, the calendar's twin */
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer; margin-right: 8px;
+    font-family: var(--ui); font-size: 10px; font-weight: 700; letter-spacing: .14em; color: var(--ink);
+    background: color-mix(in srgb, var(--cream) 94%, transparent); border: 1px solid var(--hairline); border-radius: 99px; padding: 5px 12px; transition: all .3s var(--ease); }
   #topAppr {
     align-items: center; gap: 5px; cursor: pointer;
     font-size: 12px; font-weight: 600; letter-spacing: .06em;
@@ -959,6 +963,76 @@
   body.dark .cv-x:hover { background: rgba(236,234,227,.1); }
   body.dark .cv-add { background: var(--cv-card); }
   body.dark .cv-more { background: rgba(236,234,227,.08); }
+  /* ---------- STORE (26 Oct 2026, spec 0006): AUTOMATIONS (A) — routines, store triggers and auto approve rules; the calendar's band, chips and buttons ---------- */
+  #autoOv { position: fixed; inset: 0; z-index: 42; background: var(--cream); color: var(--ink); font-family: var(--ui); display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transition: opacity .35s var(--ease); outline: none; --cv-line: rgba(21,20,20,.09); --cv-card: #fff; --cv-soft: rgba(21,20,20,.035); }
+  #autoOv.on { opacity: 1; pointer-events: auto; }
+  #auTabs button b { font-family: var(--serif); font-weight: 400; font-size: 13px; letter-spacing: 0; margin-left: 4px; }
+  #auClose { width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(253,255,248,.22); background: none; color: #FDFFF8; cursor: pointer; font-size: 13px; }
+  #auClose:hover { background: #FDFFF8; color: #151414; }
+  #auSearch { width: 240px; background: var(--cv-card); border: 1px solid var(--hairline); border-radius: 99px; outline: none; padding: 8px 14px; font-family: var(--ui); font-size: 12.5px; color: var(--ink); }
+  #auSearch:focus { border-color: var(--ink); }
+  #auChips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .au-status { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--grey); }
+  .au-status code, .au-probs code { font-size: 10.5px; background: var(--cv-soft); border-radius: 5px; padding: 1px 5px; }
+  .au-body { flex: 1; min-height: 0; display: flex; }
+  .au-list { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 22px 40px; display: flex; flex-direction: column; gap: 8px; }
+  .au-row { display: flex; align-items: center; gap: 14px; background: var(--cv-card); border: 1px solid var(--hairline); border-left: 3px solid var(--chip); border-radius: 14px; padding: 11px 14px; cursor: pointer; transition: all .3s var(--ease); }
+  .au-row:hover { border-color: var(--ink); border-left-color: var(--chip); box-shadow: 0 8px 22px rgba(21,20,20,.10); }
+  .au-row.on { border-color: var(--ink); border-left-color: var(--chip); box-shadow: 0 0 0 1px var(--ink); }
+  .au-row.paused .au-row-b { opacity: .55; }
+  .au-row-b { flex: 1; min-width: 0; }
+  .au-row-t { font-size: 13px; font-weight: 600; line-height: 1.3; }
+  .au-row-m { font-size: 11px; color: var(--grey); margin-top: 3px; line-height: 1.4; }
+  .au-row-s { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+  .au-st { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--grey); white-space: nowrap; }
+  .au-q { display: flex; gap: 5px; opacity: 0; transition: opacity .2s var(--ease); }
+  .au-row:hover .au-q, .au-row.on .au-q { opacity: 1; }
+  .au-q button { font-family: var(--ui); font-size: 8.5px; letter-spacing: .12em; font-weight: 700; border: 1px solid var(--hairline); background: none; color: var(--ink); border-radius: 99px; padding: 4px 8px; cursor: pointer; }
+  .au-q button:hover { background: var(--ink); color: var(--cream); border-color: var(--ink); }
+  .au-paused, .au-amber { color: #B4830B; font-weight: 700; }
+  .au-empty { font-family: var(--serif); font-style: italic; font-size: 17px; color: var(--grey); padding: 18px 4px; line-height: 1.4; max-width: 620px; }
+  .au-probs { background: #FBF3DF; border: 1px solid #E8CF8E; border-radius: 12px; padding: 10px 14px; font-size: 11.5px; line-height: 1.45; color: #6B4E06; }
+  .au-probs ul { margin: 6px 0 0 16px; padding: 0; }
+  .au-ed { width: 440px; flex: none; border-left: 1px solid var(--cv-line); overflow-y: auto; padding: 16px 20px 40px; display: flex; flex-direction: column; gap: 10px; }
+  .au-ed-h { display: flex; align-items: center; gap: 8px; font-size: 9.5px; letter-spacing: .16em; font-weight: 700; color: var(--grey); }
+  .au-ed-h code { font-size: 10px; letter-spacing: 0; font-weight: 400; background: var(--cv-soft); border-radius: 5px; padding: 1px 6px; }
+  .au-ed-h .sp, .au-btns .sp { flex: 1; }
+  .au-form { display: flex; flex-direction: column; gap: 10px; }
+  .au-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .au-f[hidden], .au-c[hidden], .au-three[hidden], .au-warn[hidden] { display: none; }
+  .au-l { font-size: 9px; letter-spacing: .14em; font-weight: 700; color: var(--grey); text-transform: uppercase; }
+  .au-n { font-size: 10.5px; line-height: 1.4; color: var(--grey); }
+  .au-in { font-family: var(--ui); font-size: 12.5px; color: var(--ink); background: var(--cv-card); border: 1px solid var(--hairline); border-radius: 10px; padding: 7px 9px; outline: none; min-width: 0; }
+  .au-in:focus, .au-form .cv-text:focus { border-color: var(--ink); }
+  .au-form .cv-text { background: var(--cv-card); resize: vertical; }
+  .au-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .au-three { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .au-sec { font-size: 9.5px; letter-spacing: .18em; font-weight: 700; color: var(--ink); border-top: 1px solid var(--cv-line); padding-top: 12px; margin-top: 4px; }
+  .au-sec span { letter-spacing: .04em; font-weight: 400; color: var(--grey); text-transform: none; margin-left: 6px; }
+  .au-c { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.35; cursor: pointer; }
+  .au-c input { margin: 2px 0 0; }
+  .au-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .au-chips .cv-chip { padding: 5px 9px; }
+  .au-chips .cv-chip.on { background: var(--ink); color: var(--cream); }
+  .au-warn { background: #FBF3DF; border-left: 3px solid #B4830B; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.45; color: #6B4E06; }
+  .au-say { font-family: var(--serif); font-size: 16px; line-height: 1.3; min-height: 20px; }
+  .au-say span { font-family: var(--ui); font-size: 12px; margin-right: 3px; }
+  .au-probs-f { display: flex; flex-direction: column; gap: 3px; font-size: 11px; line-height: 1.4; color: #B4391E; }
+  .au-probs-f .au-ok { color: #1E9070; font-weight: 600; } .au-probs-f .au-busy { color: var(--grey); } .au-probs-f .au-amber { color: #B4391E; font-weight: 400; }
+  .au-foot { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--cv-line); padding-top: 12px; }
+  .au-btns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .au-confirm { display: flex; flex-direction: column; gap: 8px; border: 1.5px solid var(--ink); border-radius: 14px; padding: 12px 14px; }
+  .au-confirm-t { font-size: 9.5px; letter-spacing: .16em; font-weight: 700; color: var(--grey); text-transform: uppercase; }
+  .au-confirm-r { font-family: var(--serif); font-size: 17px; line-height: 1.3; }
+  .au-confirm p, .au-intro p { margin: 0; font-size: 12px; line-height: 1.5; }
+  .au-intro { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding-top: 10px; }
+  .au-intro-t { font-family: var(--serif); font-size: 26px; }
+  .au-intro .au-keys { font-size: 10.5px; color: var(--grey); } .au-intro .au-keys b { border: 1px solid var(--hairline); border-radius: 5px; padding: 0 5px; font-weight: 600; }
+  body.dark #autoOv { --cv-line: rgba(236,234,227,.1); --cv-card: #1E1F24; --cv-soft: rgba(236,234,227,.045); }
+  body.dark .au-row.on { box-shadow: 0 0 0 1px #FDFFF8; border-color: #FDFFF8; }
+  body.dark .au-q button:hover, body.dark .au-chips .cv-chip.on { background: #FDFFF8; color: #151414; border-color: #FDFFF8; }
+  body.dark .au-probs, body.dark .au-warn { background: #3A2F14; color: #F2D79A; border-color: #6B5420; }
+  @media (max-width: 980px) { .au-body { flex-direction: column; } .au-ed { width: auto; border-left: 0; border-top: 1px solid var(--cv-line); } .au-list { flex: none; max-height: 45vh; } }
   #brainOv {
     position: fixed; inset: 0; z-index: 40; background: #0F1117; color: #E8E6DF; font-family: var(--ui);
     opacity: 0; pointer-events: none; transition: opacity .4s var(--ease);
@@ -1061,6 +1135,7 @@
   <div id="topconn"></div>
   <span class="sp"></span>
   <div id="topmodels"></div>
+  <button id="topAuto" title="routines, store triggers and auto approve rules — make, change, pause, delete (A)">⚡ AUTOMATIONS</button>
   <button id="topCal" title="the calendar — tasks and routines on their days (P)">◷ CALENDAR</button>
   <span id="topAppr" style="display:none">⚠ <span>0</span></span>
   <span id="clock">—</span>
@@ -1130,6 +1205,18 @@
     <div class="cv-wrap"><div class="cv-dow" id="cvDow"></div><div class="cv-grid month" id="cvGrid"></div></div>
   </div>
   <div id="cvPop" hidden></div>
+</div>
+<!-- STORE (26 Oct 2026, spec 0006): AUTOMATIONS — A. Routines, store triggers and auto approve rules: make, change, pause, run, delete -->
+<div id="autoOv">
+  <div class="cv-band">
+    <div class="cv-brand">AUTOMATIONS <small id="auCo"></small></div>
+    <div class="cv-seg" id="auTabs"></div>
+    <div class="cv-sp"></div>
+    <div class="cv-keys"><b>N</b> new · <b>/</b> search · <b>Esc</b> close</div>
+    <button id="auClose" title="close (Esc · A)">✕</button>
+  </div>
+  <div class="cv-tools"><input id="auSearch" placeholder="Search…" autocomplete="off" spellcheck="false"><div id="auChips"></div><div class="cv-sp"></div><div class="au-status" id="auStatus"></div><button class="cv-go" id="auNew">+ NEW</button></div>
+  <div class="au-body"><div class="au-list" id="auList"></div><aside class="au-ed" id="auEd"></aside></div>
 </div>
 <!-- V3.3: the Task Status panel — always on, right side -->
 <div id="tpanel">

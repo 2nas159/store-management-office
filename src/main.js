@@ -510,6 +510,9 @@ addEventListener('pointerup', (e) => {
 });
 addEventListener('keydown', (e) => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return; // typing in the bar, the big editor or a menu never fires a hotkey
+  if (e.key === 'Escape' && tasks && tasks.automations && tasks.automations.isOpen()) { tasks.automations.close(); return; } // STORE (26 Oct 2026, spec 0006): the Automations screen
+  if (e.key === 'a' || e.key === 'A') { if (tasks && tasks.automations) { if (tasks.calendar && tasks.calendar.isOpen()) tasks.calendar.close(); tasks.automations.toggle(); } return; }
+  if (tasks && tasks.automations && tasks.automations.isOpen()) return; // it has its own keys (N, /)
   if (e.key === 'Escape') { if (tasks && tasks.calendar && tasks.calendar.isOpen()) { if (tasks.calendar.popOpen()) tasks.calendar.closePop(); else tasks.calendar.close(); } else if (brain.isOpen()) brain.close(); else if (tasks && tasks.isOpen()) tasks.close(); else zoomOut(); }
   else if (e.key === 'p' || e.key === 'P') { if (tasks && tasks.calendar) tasks.calendar.toggle(); } // V3.2.1 (16 Sep 2026): the calendar
   else if (tasks && tasks.calendar && tasks.calendar.isOpen()) return; // the calendar has its own keys (← → W M T)
@@ -1033,6 +1036,7 @@ function zoomToApproval(dept) {
   else enterFocus(dept, s.a.id);
 }
 document.getElementById('topCal').addEventListener('click', () => { if (tasks && tasks.calendar) tasks.calendar.toggle(); }); // V3.2.1: the top-bar calendar button (same as P)
+document.getElementById('topAuto').addEventListener('click', () => { if (tasks && tasks.automations) { if (tasks.calendar && tasks.calendar.isOpen()) tasks.calendar.close(); tasks.automations.toggle(); } }); // STORE (26 Oct 2026, spec 0006): the same as A
 document.getElementById('topAppr').addEventListener('click', () => {
   const s = Object.values(R).find(r => r.state === 'stuck');
   if (s) zoomToApproval(s.a.dept);

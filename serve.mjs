@@ -387,7 +387,7 @@ function loadRoutines() { // re-read from disk every time: a routine written by 
 }
 const routinesOut = () => { const list = loadRoutines(); return { routines: list, depts: routines.ALLOWED, path: rlist.path, problems: rlist.problems }; };
 // STORE (spec 0002): the auto approve rules as the panel and the chat see them — the owner's file, today's use from the ledger
-const approvalsOut = () => { const d = approvals.load(BRAIN); return { paused: d.paused, rules: approvals.withUse(d, approvals.loadLedger(DATA)), problems: d.problems, path: d.path }; };
+const approvalsOut = () => { const d = approvals.load(BRAIN); return { paused: d.paused, rules: approvals.withUse(d, approvals.loadLedger(DATA)), problems: d.problems, path: d.path, currency: cfg.currency }; }; // currency: the Automations screen's default for a new money rule (spec 0006)
 const pendingRule = new Map(); // lead id → { rule, at }: a rule said in chat waits for the owner's "yes" before it is saved
 async function approvalsChat(a, t) { // a department lead: "auto approve …" (read back, saved on yes) · "rules" · "pause|resume|delete … rule" · "pause|resume auto approvals"
   if (leadOf(a.department).id !== a.id) return approvals.proposes(t) || /\brules?\b/i.test(t) && /^\s*(pause|resume|delete|remove)\b/i.test(t) || /^\s*(pause|stop|resume|start)\s+(?:all\s+)?(?:the\s+)?auto[\s-]*approv/i.test(t)
@@ -568,9 +568,17 @@ function tickScheduled() { // V3.2.1: a task scheduled for a date fires on its m
 }
 const uniqueId = (base, list) => { let id = base || 'routine', n = 2; while (list.some(r => r.id === id)) id = `${base}-${n++}`; return id; };
 function editRoutine(id, patch) { const r = rlist.routines.find(x => x.id === id); if (!r) return null; Object.assign(r, patch); routines.save(BRAIN, rlist.routines); return loadRoutines().find(x => x.id === id); }
+// STORE (26 Oct 2026, spec 0006): an edit from the Automations screen is checked as a whole before it is saved — a bad one is refused with its problems, never half applied
+function updateRoutine(id, patch) {
+  const i = rlist.routines.findIndex(x => x.id === id); if (i < 0) return { problems: ['no such routine'] };
+  const v = routines.validate({ ...rlist.routines[i], ...patch, id }, AGENTS, rlist.routines.filter(x => x.id !== id));
+  if (v.problems.length) return { problems: v.problems };
+  rlist.routines[i] = v.routine; routines.save(BRAIN, rlist.routines);
+  console.log(`⏱ routine ${id} edited`); return { routine: loadRoutines().find(x => x.id === id) };
+}
 function removeRoutine(id) { const n = rlist.routines.length; rlist.routines = rlist.routines.filter(x => x.id !== id); if (rlist.routines.length !== n) routines.save(BRAIN, rlist.routines); loadRoutines(); return rlist.routines.length !== n; }
 // a sentence (or the REPEAT picker) → a routine in the brain file. Claude names the agent, the title and whether it needs the OK.
-async function makeRoutine({ dept, text, when, agent, needsOk, model, effort }) {
+async function makeRoutine({ dept, text, when, agent, needsOk, model, effort, title, team }) {
   let taskText = String(text || '').trim(), w = when, parsed = null;
   if (!w) {
     parsed = parseWhen(taskText);
@@ -582,9 +590,10 @@ async function makeRoutine({ dept, text, when, agent, needsOk, model, effort }) 
   if (!validWhen(w)) return { error: 'That schedule is not complete.' };
   if (!taskText) return { error: 'What should happen? The sentence has a time but no task.' };
   loadRoutines();
-  const r = await route(dept, taskText);
-  const a = agent && AGENTS.find(x => x.id === agent && x.department === dept) ? agent : r.agent;
-  const v = routines.validate({ id: uniqueId(slug(r.title).slice(0, 40), rlist.routines), dept, agent: a, title: r.title, text: taskText, when: w, needsOk: typeof needsOk === 'boolean' ? needsOk : r.needsOk, plan: r.plan, model: normModel(model) || undefined, effort: normEffort(effort) || undefined }, AGENTS, rlist.routines);
+  const named = String(title || '').trim().slice(0, 90), desk = agent && AGENTS.find(x => x.id === agent && x.department === dept);
+  const r = desk && named ? { agent, title: named, plan: [], why: '', needsOk: routines.guessNeedsOk(taskText) } : await route(dept, taskText); // STORE spec 0006: the screen named the desk and the title, so no Claude run
+  const a = desk ? agent : r.agent; if (named) r.title = named;
+  const v = routines.validate({ id: uniqueId(slug(r.title).slice(0, 40), rlist.routines), dept, agent: a, title: r.title, text: taskText, when: w, needsOk: typeof needsOk === 'boolean' ? needsOk : r.needsOk, plan: r.plan, model: normModel(model) || undefined, effort: normEffort(effort) || undefined, team: team === true || undefined }, AGENTS, rlist.routines);
   if (v.problems.length) return { error: v.problems.join('; ') };
   rlist.routines.push(v.routine); routines.save(BRAIN, rlist.routines);
   const out = loadRoutines().find(x => x.id === v.routine.id);
@@ -697,7 +706,7 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       if (!DEPTS[b.dept] || b.dept === 'brain') return json(res, 400, { error: 'unknown department' });
       if (!routines.ALLOWED.includes(b.dept)) return json(res, 400, { error: routines.refusal(b.dept), refused: true });
-      const r = await makeRoutine({ dept: b.dept, text: b.text, when: b.when, agent: b.agent, needsOk: b.needsOk, model: b.model, effort: b.effort });
+      const r = await makeRoutine({ dept: b.dept, text: b.text, when: b.when, agent: b.agent, needsOk: b.needsOk, model: b.model, effort: b.effort, title: b.title, team: b.team });
       return json(res, r.error ? 400 : 200, r);
     }
     const rm = url.pathname.match(/^\/api\/routines\/([^/]+)(?:\/(run|pause|resume))?$/);
@@ -711,17 +720,29 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req); const patch = {};
       if (typeof b.needsOk === 'boolean') patch.needsOk = b.needsOk; if (typeof b.paused === 'boolean') patch.paused = b.paused;
       if (typeof b.text === 'string' && b.text.trim()) patch.text = b.text.trim(); if (typeof b.title === 'string' && b.title.trim()) patch.title = b.title.trim().slice(0, 90);
-      if (b.when && validWhen(b.when)) patch.when = b.when;
+      if (b.when) patch.when = b.when; // STORE spec 0006: a bad schedule is refused by name, not dropped without a word
       if (b.model !== undefined) patch.model = normModel(b.model) || '';
       if (b.effort !== undefined) patch.effort = normEffort(b.effort) || '';
-      editRoutine(r.id, patch); return json(res, 200, { ok: true, routines: loadRoutines() });
+      if (typeof b.dept === 'string') patch.dept = b.dept; if (typeof b.agent === 'string') patch.agent = b.agent; if (typeof b.team === 'boolean') patch.team = b.team; // STORE spec 0006: move it to another desk, or make it a team routine
+      const u = updateRoutine(r.id, patch); if (u.problems) return json(res, 400, { error: u.problems.map(p => p.replace(/^[^:]+: /, '')).join('; '), problems: u.problems });
+      return json(res, 200, { ok: true, routine: u.routine, routines: loadRoutines() });
     }
     if (url.pathname === '/api/telegram' && req.method === 'GET') return json(res, 200, team ? { ...team.status(), problems: TG.problems } : { on: false, configured: TG.on, problems: TG.problems }); // STORE spec 0005
     if (url.pathname === '/api/triggers' && req.method === 'GET') return json(res, 200, triggersOut()); // STORE spec 0004
+    // STORE (26 Oct 2026, spec 0006): the Automations screen writes triggers — POST /api/triggers makes one, POST /api/triggers/:id replaces it; { dry: true } only checks
+    // JSON only: a text/plain POST needs no CORS preflight, so without this any web page open in the owner's browser could write a trigger or a rule here
+    const notJSON = () => { if (/^application\/json\b/i.test(req.headers['content-type'] || '')) return false; json(res, 415, { error: 'send JSON (content-type: application/json)' }); return true; };
+    const saveTrigger = async (id) => { if (notJSON()) return; const b = await body(req), u = triggers.upsert(BRAIN, AGENTS, id, b, { dry: b.dry === true });
+      if (u.missing) return json(res, 404, { error: 'no such trigger' });
+      if (u.problems) return json(res, 400, { error: u.problems.map(p => p.replace(/^[^:]+: /, '')).join('; '), problems: u.problems });
+      if (b.dry !== true) console.log(`🛍 trigger ${u.trigger.id} ${id ? 'edited' : 'added'}: ${u.trigger.title} (${u.desc} → ${u.trigger.agent})`);
+      return json(res, 200, { ok: true, dry: b.dry === true, trigger: u.trigger, desc: u.desc, ...triggersOut() }); };
+    if (url.pathname === '/api/triggers' && req.method === 'POST') return saveTrigger(null);
     const tm = url.pathname.match(/^\/api\/triggers\/([^/]+)(?:\/(pause|resume|run))?$/);
     if (tm) {
       const tid = (() => { try { return decodeURIComponent(tm[1]); } catch { return tm[1]; } })(), x = loadTriggers().triggers.find(y => y.id === tid);
       if (!x) return json(res, 404, { error: 'no such trigger' });
+      if (req.method === 'POST' && !tm[2]) return saveTrigger(x.id);
       if (req.method === 'DELETE' && !tm[2]) triggers.edit(BRAIN, doc => { doc.triggers = doc.triggers.filter(y => y?.id !== x.id); });
       else if (req.method === 'POST' && (tm[2] === 'pause' || tm[2] === 'resume')) triggers.edit(BRAIN, doc => { const y = doc.triggers.find(z => z?.id === x.id); if (y) y.paused = tm[2] === 'pause'; });
       else if (req.method === 'POST' && tm[2] === 'run') { const r = await checkStore({ runNow: x.id, force: true }); return json(res, 200, { ok: true, fired: (r.fired || []).map(t => t.id), ...triggersOut() }); } // RUN NOW: check now, start what is held past the cap
@@ -730,6 +751,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, ...triggersOut() });
     }
     if (url.pathname === '/api/approvals' && req.method === 'GET') return json(res, 200, approvalsOut()); // STORE spec 0002
+    // STORE (26 Oct 2026, spec 0006): the Automations screen writes rules — POST /api/approvals makes one, POST /api/approvals/:id replaces it.
+    // The screen sends { dry: true } first and reads the rule back (and what an edit widens) before the owner turns it on, as the lead's chat does.
+    const saveRule = async (id) => { if (notJSON()) return; const b = await body(req), u = approvals.upsert(BRAIN, id, b, { dry: b.dry === true });
+      if (u.missing) return json(res, 404, { error: 'no such rule' });
+      if (u.problems) return json(res, 400, { error: u.problems.map(p => p.replace(/^[^:]+: /, '')).join('; '), problems: u.problems });
+      if (b.dry !== true) console.log(`⚡ rule ${u.rule.id} ${id ? 'edited' : 'on'} (from the Automations screen): ${u.desc}${u.widens.length ? ' · wider: ' + u.widens.join('; ') : ''}`);
+      return json(res, 200, { ok: true, dry: b.dry === true, rule: u.rule, desc: u.desc, widens: u.widens, ...approvalsOut() }); };
+    if (url.pathname === '/api/approvals' && req.method === 'POST') return saveRule(null);
     const am = url.pathname.match(/^\/api\/approvals\/([^/]+)(?:\/(pause|resume))?$/);
     if (am) {
       if ((am[1] === 'pause' || am[1] === 'resume') && !am[2]) { // the one switch for every rule
@@ -738,6 +767,7 @@ const server = http.createServer(async (req, res) => {
       }
       const rid = (() => { try { return decodeURIComponent(am[1]); } catch { return am[1]; } })(); // an id written by hand may hold a space
       const r = approvals.load(BRAIN).rules.find(x => x.id === rid); if (!r) return json(res, 404, { error: 'no such rule' });
+      if (req.method === 'POST' && !am[2]) return saveRule(r.id);
       if (req.method === 'DELETE' && !am[2]) approvals.edit(BRAIN, doc => { doc.rules = doc.rules.filter(x => x?.id !== r.id); });
       else if (req.method === 'POST' && am[2]) approvals.edit(BRAIN, doc => { const x = doc.rules.find(y => y?.id === r.id); if (x) x.paused = am[2] === 'pause'; });
       else return json(res, 405, { error: 'POST …/pause|resume or DELETE' });

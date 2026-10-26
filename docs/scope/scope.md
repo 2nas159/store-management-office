@@ -24,6 +24,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 5 | Gate the draft run | Slice 3 | in-progress |
 | 6 | Shopify event triggers | Slice 4 | in-progress |
 | 7 | The team on Telegram | Slice 5 | in-progress |
+| 8 | The Automations screen | Slice 6 | in-progress |
 
 ## Already there
 
@@ -138,6 +139,17 @@ spec [0005](../specs/0005-telegram-team.md) · code in `telegram.mjs`, `team.mjs
 - [ ] Test it: `/test the team on telegram`
 - [ ] Review it: `/check review the team on telegram`
 - [ ] Document it: `/document the team on telegram`
+
+## Slice 6: Run it without the files
+
+### 8. The Automations screen
+Routines, store triggers and auto approve rules on one screen (A): a list and an editor to make, change, pause, run and delete each one, checked as typed with the server's own sentences; a rule read back before it turns on, and a wider edit named.
+spec [0006](../specs/0006-automations-screen.md) · code in `src/automations.js`, `src/rules.js`, `src/triggerdefs.js`, `approvals.mjs`, `triggers.mjs`, `serve.mjs`, `src/tasks.js`, `src/main.js`, `src/shell.html`, `check.mjs`
+**Done when:** each of the three can be made, changed, paused and deleted from the screen, live and demo, without opening a file; bad input is refused by name in the form and by the server; a rule turns on only after it is read back.
+- [x] Design it (spec): written with the build, 26 Oct
+- [x] Build it: screen, endpoints, shared checks, docs; `npm run check` 99/99 with the Telegram team merged; driven live against a real server (create, read back, team edit, delete)
+- [ ] Verify it: `/check verify automations screen`
+- [ ] Review it: `/check review automations screen`
 
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.

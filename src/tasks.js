@@ -26,6 +26,7 @@ import { applyTasks, PROFILE, titleCase } from './profile.js';
 import { parseWhen, describe, nextRun, fromPicker, untilText } from './when.js';
 import { tokensText, total as tokTotal, short as tokShort } from './tokens.js'; // STORE (25 Oct 2026): tokens per task
 import { initCalendar } from './calendar.js'; // V3.2.1 (16 Sep 2026): the calendar on P
+import { initAutomations } from './automations.js'; // STORE (26 Oct 2026, spec 0006): routines, store triggers and rules in one screen on A
 import { readOf, summary as actSummary, cardLines, money as actMoney, STATUS_TEXT } from './actions.js'; // STORE (24 Oct 2026): a draft's outbound actions (spec 0001)
 import { MODEL_KEYS, MODELS, DEFAULT_MODEL, modelName, normModel, FROM_TEXT , EFFORT_KEYS, EFFORT_NAME, normEffort, effortName, effortFor } from './models.js';
 
@@ -791,7 +792,7 @@ export function initTasks(ctx) {
     const s = trigDoc.shopify, f = getFocused(), list = trigDoc.triggers.filter(t => !f || f === 'brain' || t.dept === f);
     if (!s?.on && !list.length) return telegramHTML();
     const line = !s?.on ? 'not connected: add "shopify" to office.config.local.json' : s.problem ? `<span class="tp-amber">${esc(s.problem)}</span>` : `${esc(s.shop)} · checked ${ago(s.lastOk)} · every ${s.poll} min · read-only`;
-    return telegramHTML() + `<div class="tp-row sched trig head" data-trig="*"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">SHOPIFY</div><div class="tp-m">${line}</div></div></div>` +
+    return telegramHTML() + `<div class="tp-row sched trig head" data-trig="*"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">SHOPIFY</div><div class="tp-m">${line}</div><div class="tp-act"><button data-manage="triggers">MANAGE</button></div></div></div>` +
       list.map(t => `<div class="tp-row sched trig${t.paused ? ' paused' : ''}" data-trig="${esc(t.id)}" data-dept="${t.dept}"><span class="tp-st sched">🛍</span><div class="tp-body"><div class="tp-t">${esc(t.title)}</div><div class="tp-m">${esc(t.desc)} · ${agentOf(t.agent)?.name || esc(t.agent)} · ${t.today} of ${t.dailyCount} today${t.held ? ` · <span class="tp-amber">${t.held} held (cap reached)</span>` : ''}${t.needsOk ? ' · waits for your OK' : ' · read-only'}</div>
       <div class="tp-act"><button class="run" data-tact="run">RUN NOW</button><button data-tact="${t.paused ? 'resume' : 'pause'}">${t.paused ? 'RESUME' : 'PAUSE'}</button><button data-tact="delete">DELETE</button></div></div><span class="tp-ago">${t.paused ? 'PAUSED' : 'ON'}</span></div>`).join('');
   }
@@ -813,7 +814,7 @@ export function initTasks(ctx) {
   function rulesHTML() {
     const { paused, rules: rl } = rulesDoc; if (!rl.length) return '';
     return `<div class="tp-row rule head${paused ? ' paused' : ''}" data-rule="*"><span class="tp-st sched">⚡</span><div class="tp-body"><div class="tp-t">AUTO APPROVE · ${rl.length} rule${rl.length > 1 ? 's' : ''}${paused ? ' · ALL PAUSED' : ''}</div><div class="tp-m">A draft goes out on its own only when every action fits a rule with room left today.</div>
-      <div class="tp-act"><button data-ract="${paused ? 'resume' : 'pause'}">${paused ? 'RESUME ALL' : 'PAUSE ALL'}</button></div></div></div>` +
+      <div class="tp-act"><button data-ract="${paused ? 'resume' : 'pause'}">${paused ? 'RESUME ALL' : 'PAUSE ALL'}</button><button data-manage="rules">MANAGE</button></div></div></div>` +
       rl.map(r => `<div class="tp-row rule${r.paused || paused ? ' paused' : ''}" data-rule="${esc(r.id)}"><span class="tp-st sched">⚡</span><div class="tp-body"><div class="tp-t">${esc(r.title)}</div><div class="tp-m">${esc(r.desc || '')}${r.use ? ' · ' + esc(r.use) : ''}</div>
       <div class="tp-act"><button data-ract="${r.paused ? 'resume' : 'pause'}">${r.paused ? 'RESUME' : 'PAUSE'}</button><button data-ract="delete">DELETE</button></div></div><span class="tp-ago">${r.paused ? 'PAUSED' : 'ON'}</span></div>`).join('');
   }
@@ -856,12 +857,13 @@ export function initTasks(ctx) {
       .sort((a, b) => b.changedAt - a.changedAt).slice(0, 60);
     const before = structural ? {} : rects();
     P_.rows.innerHTML = filter === 'sched'
-      ? ((triggersHTML() + scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
+      ? ((triggersHTML() + scopedRoutines().sort(byNext).map(rowHTMLr).join('') + scoped().filter(t => t.state === 'scheduled').sort((a, b) => a.dueAt - b.dueAt).map(rowHTMLp).join('')) || `<div class="tp-empty">No routines yet. Type one with a time in it — "every weekday at 8am, …" — or press REPEAT. Press <b>P</b> for the calendar to schedule a task for a date, <b>A</b> for routines, store triggers and auto approve rules.${RT_DEPTS.includes(dept) ? '' : ' ' + esc(rtRefuse(dept))}</div>`)
       : (filter === 'waiting' ? rulesHTML() : '') + (list.map(rowHTMLp).join('') || `<div class="tp-empty">Nothing here right now.</div>`); // STORE spec 0002: the rules head the Waiting list
     renderNext();
     P_.rows.querySelectorAll('[data-tact]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); trigAct(b.closest('[data-trig]').dataset.trig, b.dataset.tact); })); // STORE spec 0004
+    P_.rows.querySelectorAll('[data-manage]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); if (automations) automations.open(b.dataset.manage); })); // STORE spec 0006
     P_.rows.querySelectorAll('[data-ract]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); ruleAct(b.closest('[data-rule]').dataset.rule, b.dataset.ract); }));
-    P_.rows.querySelectorAll('.tp-act button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const row = b.closest('.tp-row'); if (row.dataset.rid) rtAct(row.dataset.rid, b.dataset.act); else if (b.dataset.act === 'cancel') cancelScheduled(tasks.find(t => String(t.id) === row.dataset.id)); else if (b.dataset.act === 'calendar' && calendar) calendar.open(); }));
+    P_.rows.querySelectorAll('.tp-act button[data-act]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const row = b.closest('.tp-row'); if (row.dataset.rid) rtAct(row.dataset.rid, b.dataset.act); else if (b.dataset.act === 'cancel') cancelScheduled(tasks.find(t => String(t.id) === row.dataset.id)); else if (b.dataset.act === 'calendar' && calendar) calendar.open(); }));
     P_.rows.querySelectorAll('.tp-row.waiting').forEach(n => n.addEventListener('click', () => zoomToApproval(n.dataset.dept)));
     P_.rows.querySelectorAll('.tp-row.live.done').forEach(n => n.addEventListener('click', () => openAgent && openAgent(n.dataset.agent, 'chat')));
     if (!structural) flip(before);
@@ -1098,7 +1100,11 @@ export function initTasks(ctx) {
     return true;
   }
   const calendar = initCalendar({ tasks, routines, agentOf, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, create: createScheduled, createRoutine: createRoutineAt, cancelTask: cancelScheduled, rtAct, openAgent: (id, tab) => openAgent && openAgent(id, tab), esc, isLive: () => live, officeModel: () => officeModel, MODEL_KEYS, modelName, business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
-  return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, createScheduled, cancelScheduled,
+  // STORE (26 Oct 2026, spec 0006): AUTOMATIONS (A) — make, change, pause, run and delete routines, store triggers and auto approve rules
+  const automations = initAutomations({ routines, triggers: () => trigDoc, rules: () => rulesDoc, setRoutines, setTriggers, setApprovals, addRoutine, touched: () => { syncPills(); dirty = true; if (railAgent) railFor(railAgent); render(true); },
+    rtAct, trigAct, ruleAct, refresh: poll, agentOf, AGENTS, DEPTS, DEPT_KEYS, RT_DEPTS, rtRefuse, MODEL_KEYS, modelName, EFFORT_KEYS, effortName, esc, isLive: () => live, officeModel: () => officeModel,
+    business: () => document.title.replace(/ — Agents Office$/, ''), currentDept: () => dept });
+  return { tick, toggle, open, close, openFor, isOpen, boardWidth, onFocusChange, onStuck, onResolve, calendar, automations, createScheduled, cancelScheduled,
            handleChat, addTask, revise, rowHTML, setDept, tasks, panelWidth: () => panel.offsetWidth, isLive: () => live,
            routines, addRoutine, rtAct, railFor, syncPills, refresh: poll, reconcile, setApprovals, rules: () => rulesDoc, setTriggers, triggers: () => trigDoc, setTelegram, resolveLive, pendingReject, rejectLive, officeModel: () => officeModel, chosenModel, chosenEffort };
 }

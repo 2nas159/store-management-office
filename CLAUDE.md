@@ -83,6 +83,8 @@ Two more things the office writes into the brain on its own. Both are plain file
 
 ## Routines: tasks on the office's own clock
 
+The owner can also make, change, pause, run and delete routines, store triggers and auto approve rules themselves on the **Automations** screen (A, or ⚡ AUTOMATIONS in the top bar). It writes the same three brain files described below, checked the same way. When the owner asks you instead, write the files as described here.
+
 When the owner says "every Monday …", "each morning …", "on a schedule", "automatically at …", "make X happen every …", that is a **routine**: a task the office fires by itself at that time and runs without anyone typing. **Every department can have routines** (`emails`, `sales`, `marketing`, `ops`, `fin`, `delivery`; the list is `ROUTINE_DEPTS` in `src/data.js`).
 
 **Where:** `<brain>/Agents Office/routines.json` (`<brain>` as above). Create it with `{"routines": []}` if it does not exist. Never write routines anywhere else.

@@ -27,6 +27,7 @@ bottom-left and a licence line along the bottom; leave them in place.
 
 ![The calendar — tasks and routines on their days, a routine being scheduled from a date](assets/readme-calendar.jpg)
 
+- **Automations (A)** — 26 Oct 2026, store fork · Routines, store triggers and auto approve rules on one screen: make, change, pause, run now and delete each one without touching a file. A rule is read back before it turns on. → [Automations](#automations-routines-triggers-and-rules-in-one-place)
 - **The calendar (P)** — 17 Sep 2026 · Everything on the day it belongs to: finished tasks, today's work, tasks you have scheduled, and every routine projected forward. Click any day to schedule a task for it, or switch on REPEAT to start a routine from that date. A rail lists the routines themselves. Month and week, dark mode too. → [The calendar](#the-calendar-everything-on-the-day-it-belongs-to)
 - **Agent Teams** — 16 Sep · Press TEAM or say "as a team": the department lead splits the job across its desks, they work at the same time, leave notes for each other, and the lead writes the final. → [Agent Teams](#agent-teams-the-lead-splits-it-across-the-desks)
 - **Claude in Chrome** — 16 Sep · The agents can use your own browser for any site you are signed in to, under the same read-freely, act-only-when-asked rule. → [Claude in Chrome](#claude-in-chrome-the-agents-can-use-your-browser)
@@ -299,6 +300,20 @@ comes back, marked LATE; never more than one catch-up per routine. Every firing 
 terminal and a task in the panel, so "did it run" is never a guess. For filming, `every 2
 minutes` is accepted, though the picker does not offer it.
 
+## Automations: routines, triggers and rules in one place
+
+Press **A**, or the ⚡ AUTOMATIONS button in the top bar. Three tabs: **Routines**, **Store
+triggers** and **Auto approve**. A list on the left (search it, or pick departments), the editor
+on the right. Make one with + NEW (or N), click one to change it, and PAUSE, RUN NOW or DELETE it
+from its row or its editor. Every form says back what it will do as you type (`Thursdays · 08:00 ·
+next Thu 08:00 · read-only, no OK needed`) and names what is missing with the same sentences the
+server and `npm run check` use. A rule is read back before it turns on, and an edit that lets more
+through says how (`the most per action 30 USD → 50 USD`). Anything a file holds that the office
+skipped as broken is named at the top of its tab, with the file to fix. The screen writes the same
+files as everything else (`routines.json`, `triggers.json`, `approvals.json` in the brain), so a
+lead in chat, Claude Code and the screen never disagree. MANAGE on the Shopify and rules rows of
+the panel opens it at the right tab.
+
 ## The calendar: everything on the day it belongs to
 
 Press **P**, or the CALENDAR button in the top bar beside the approval counter. One quiet screen: finished tasks on the day they finished, today's work on today,
@@ -416,6 +431,7 @@ every note they read, so your graph grows as the office works.
 | `B` | The company board: every department, scheduled to done |
 | `G` | The Brain graph |
 | `P` | The calendar: tasks and routines on their days; click a day to schedule |
+| `A` | Automations: make, change, pause and delete routines, store triggers and auto approve rules |
 | `C` | Chat with the department lead |
 | `X` | Send two agents to meet at the Brain |
 | `V` | Full screen view with dimmed lighting |

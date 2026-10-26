@@ -1019,6 +1019,35 @@ await step('telegram: every answer, card and result says its tokens', async () =
   } finally { h.done(); }
 });
 
+/* ---------- 1k. the Automations screen (STORE, spec 0006) — the writes behind its forms ---------- */
+await step('automations: a trigger or a rule is made and replaced as given; its id and pause stay, a dry run writes nothing, broken entries stay in the file', async () => { // STORE spec 0006
+  const T = await import('./triggers.mjs'), ap = await import('./approvals.mjs'), { loadRoster } = await import('./roster.mjs'), os = await import('node:os'); const agents = loadRoster().agents;
+  const brain = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-auto-')), lead = agents.find(a => a.department === 'delivery' && a.lead);
+  try {
+    fs.mkdirSync(path.join(brain, 'Agents Office'), { recursive: true });
+    fs.writeFileSync(T.file(brain), JSON.stringify({ triggers: [{ id: 'answer-the-returns', event: 'order_paid', dept: 'delivery', text: 'x' }] })); // a broken entry holds the slug
+    const input = { event: 'return_requested', dept: 'delivery', title: 'Answer the returns', text: 'Draft the replies.' };
+    const dry = T.upsert(brain, agents, null, input, { dry: true }); if (!dry.trigger || T.load(brain, agents).triggers.length) throw new Error('a dry run wrote the trigger: ' + JSON.stringify(dry));
+    const a = T.upsert(brain, agents, null, input);
+    if (a.trigger?.id !== 'answer-the-returns-2' || a.trigger.agent !== lead.id || a.desc !== 'on a return request') throw new Error('create: ' + JSON.stringify(a));
+    const bad = T.upsert(brain, agents, a.trigger.id, { event: 'stock_low', dept: 'delivery', text: 'x' }); if (!bad.problems?.some(p => /needs below/.test(p))) throw new Error('a stock trigger with no line was taken: ' + JSON.stringify(bad));
+    T.edit(brain, d => { d.triggers[1].paused = true; });
+    const e = T.upsert(brain, agents, a.trigger.id, { event: 'stock_low', dept: 'ops', text: 'Restock note.', below: 3, title: 'Restock', filter: { minTotal: 50 } });
+    const raw = JSON.parse(fs.readFileSync(T.file(brain), 'utf8')).triggers;
+    if (e.problems || raw.length !== 2 || raw[0].event !== 'order_paid' || raw[1].id !== 'answer-the-returns-2' || raw[1].below !== 3 || raw[1].filter || raw[1].paused !== true || raw[1].agent !== agents.find(x => x.department === 'ops' && x.lead).id) throw new Error('edit: ' + JSON.stringify(raw));
+    if (!T.upsert(brain, agents, 'nope', input).missing) throw new Error('an unknown trigger must be missing');
+    const p0 = ap.upsert(brain, null, { title: 'Pause', kinds: ['reply'], dailyCount: 5 }); if (p0.rule?.id !== 'pause-2') throw new Error('"pause" is the switch of all rules, a rule may not take it: ' + JSON.stringify(p0));
+    const nocap = ap.upsert(brain, null, { title: 'Refunds', kinds: ['refund'], max: 30, currency: 'USD' }); if (!nocap.problems?.some(p => /daily money cap/.test(p))) throw new Error('a refund rule with no daily cap was taken');
+    const r1 = ap.upsert(brain, null, { title: 'Small refunds', kinds: ['refund'], max: 30, currency: 'USD', dailyMax: 200 }); ap.edit(brain, d => { d.rules.find(r => r.id === 'small-refunds').paused = true; });
+    const look = ap.upsert(brain, 'small-refunds', { title: 'Small refunds', kinds: ['refund', 'discount'], max: 50, currency: 'USD', dailyMax: 200, maxPercent: 10, dailyCount: 5 }, { dry: true });
+    if (look.problems || look.widens.join('; ') !== 'it now covers discount; the most per action 30 USD → 50 USD; the most percent had no limit of its own → 10%; the daily count had no limit of its own → 5') throw new Error('widens: ' + JSON.stringify(look.widens));
+    if (ap.load(brain).rules.find(r => r.id === 'small-refunds').max !== 30) throw new Error('a dry run changed the rule');
+    const done = ap.upsert(brain, 'small-refunds', { title: 'Small refunds', kinds: ['refund'], max: 20, currency: 'USD', dailyMax: 200 }); const now = ap.load(brain).rules.find(r => r.id === 'small-refunds');
+    if (done.widens.length || now.max !== 20 || now.paused !== true) throw new Error('a narrower edit: ' + JSON.stringify({ done, now }));
+    if (!ap.widens({ ...r1.rule, depts: ['delivery'] }, r1.rule).some(w => /no longer limited to these departments: delivery/.test(w))) throw new Error('dropping a department must read as wider');
+    return 'trigger: dry writes nothing · slug past a broken entry · lead by default · edit keeps id and pause, drops the order filter on stock · rule: "pause" refused as an id · no cap refused · a wider edit says how · a narrower one does not';
+  } finally { fs.rmSync(brain, { recursive: true, force: true }); }
+});
 /* ---------- 2. offline smoke (Playwright) ---------- */
 let chromium = null;
 try { ({ chromium } = await import('playwright')); } catch { try { ({ chromium } = await import('playwright-core')); } catch {} }
@@ -1285,6 +1314,46 @@ else {
       if (!await page.evaluate(fromTrigger)) throw new Error('the trigger task does not say where it came from');
       return 'Shopify line (checked 2 min ago · read-only) · trigger row 3 of 10, 2 held · PAUSE · a problem shown in words · the task row names the trigger';
     });
+    await step('smoke: A opens AUTOMATIONS — a routine, a store trigger and a rule made from their forms, the rule read back and its widening named; MANAGE opens it from the panel (demo)', async () => { // STORE spec 0006
+      await page.evaluate(() => { document.activeElement?.blur(); window.CC.tasks.setApprovals({ paused: false, rules: [] }); window.CC.tasks.setTriggers({ shopify: null, triggers: [] }); });
+      await page.keyboard.press('a'); await until(() => document.getElementById('autoOv')?.classList.contains('on'));
+      if (!await page.evaluate(() => document.getElementById('autoOv').classList.contains('on'))) throw new Error('A did not open the screen');
+      const ed = s => '#auEd ' + s, text = s => page.evaluate(q => document.querySelector(q)?.textContent.replace(/\s+/g, ' ').trim() || '', s);
+      await page.click('#auTabs [data-t="routines"]'); await page.click('#auNew');
+      await page.fill(ed('[data-f="text"]'), 'List the overnight orders that need a reply'); await page.fill(ed('[data-f="title"]'), 'Chk overnight orders');
+      await page.selectOption(ed('[data-f="dept"]'), 'delivery'); await page.selectOption(ed('[data-f="cad"]'), 'weekly'); await page.click(ed('[data-f="days"] [data-v="1"]')); // Monday off: no day
+      if (!/Pick at least one day/.test(await text(ed('.au-probs-f')))) throw new Error('no day picked and no word: ' + await text(ed('.au-probs-f')));
+      await page.click(ed('[data-f="days"] [data-v="4"]')); await page.click(ed('[data-f="needsOk"]'));
+      if (!/^⏱ Thursdays · 08:00 · next .* · read-only, no OK needed$/.test(await text(ed('.au-say')))) throw new Error('routine read back: ' + await text(ed('.au-say')));
+      await page.click(ed('[data-save]')); await until(() => /Saved/.test(document.querySelector('#auEd .au-probs-f')?.textContent || ''));
+      const r = await page.evaluate(() => window.CC.tasks.routines.find(x => x.title === 'Chk overnight orders'));
+      if (!r || r.dept !== 'delivery' || r.needsOk || JSON.stringify(r.when.days) !== '[4]' || !r.nextAt) throw new Error('routine: ' + JSON.stringify(r));
+      await page.click('#auTabs [data-t="triggers"]'); await page.click('#auNew');
+      await page.selectOption(ed('[data-f="event"]'), 'stock_low'); await page.fill(ed('[data-f="text"]'), 'Draft the restock note for these.'); await page.selectOption(ed('[data-f="dept"]'), 'ops');
+      if (await page.evaluate(() => !document.querySelector('#auEd [data-vis="orders"]').hidden)) throw new Error('the order total shows for a stock trigger');
+      await page.click(ed('[data-f="customerText"]')); if (await page.evaluate(() => document.querySelector('#auEd .au-warn').hidden)) throw new Error('customer words switched on without the warning');
+      await page.click(ed('[data-save]')); await until(() => window.CC.tasks.triggers().triggers.length === 1);
+      const t = await page.evaluate(() => window.CC.tasks.triggers().triggers[0]);
+      if (!t || t.below !== 5 || t.dept !== 'ops' || !t.agent || t.customerText !== true || t.desc !== 'on low stock (at or below 5)') throw new Error('trigger: ' + JSON.stringify(t));
+      await page.click('#auTabs [data-t="rules"]'); await page.click('#auNew');
+      await page.fill(ed('[data-f="title"]'), 'Small refunds'); await page.click(ed('[data-f="kinds"] [data-v="refund"]'));
+      if (!/needs max, currency and dailyMax/.test(await text(ed('.au-probs-f')))) throw new Error('a refund rule with no cap: ' + await text(ed('.au-probs-f')));
+      await page.fill(ed('[data-f="max"]'), '30'); await page.fill(ed('[data-f="dailyMax"]'), '200'); await page.click(ed('[data-save]'));
+      await until(() => !!document.querySelector('#auEd .au-confirm'));
+      if (!/Small refunds — refund · up to 30\.00 USD each · at most 200\.00 USD a day/.test(await text(ed('.au-confirm'))) || await page.evaluate(() => window.CC.tasks.rules().rules.length)) throw new Error('read back, or saved before the yes: ' + await text(ed('.au-confirm')));
+      await page.click(ed('[data-yes]')); await until(() => window.CC.tasks.rules().rules.length === 1);
+      await page.fill(ed('[data-f="max"]'), '50'); await page.click(ed('[data-save]')); await until(() => !!document.querySelector('#auEd .au-confirm'));
+      if (!/This lets more through than before: the most per action 30 USD → 50 USD/.test(await text(ed('.au-confirm')))) throw new Error('the widening is not named: ' + await text(ed('.au-confirm')));
+      await page.click(ed('[data-yes]')); await until(() => window.CC.tasks.rules().rules[0]?.max === 50);
+      if (await page.evaluate(() => window.CC.tasks.rules().rules[0]?.max) !== 50) throw new Error('the wider rule was not saved');
+      await page.keyboard.press('Escape'); await until(() => !document.getElementById('autoOv').classList.contains('on'));
+      await page.click('.tp-chip[data-f="waiting"]'); await until(() => !!document.querySelector('.tp-row.rule.head [data-manage]'));
+      await page.evaluate(() => document.querySelector('.tp-row.rule.head [data-manage]').click()); await until(() => document.getElementById('autoOv').classList.contains('on'));
+      if (await page.evaluate(() => document.querySelector('#auTabs .on')?.dataset.t) !== 'rules') throw new Error('MANAGE did not open the rules');
+      await page.evaluate(() => document.getElementById('auClose').click()); await page.click('.tp-chip[data-f="all"]');
+      await page.evaluate(() => { window.CC.tasks.setApprovals({ paused: false, rules: [] }); window.CC.tasks.setTriggers({ shopify: null, triggers: [] }); const l = window.CC.tasks.routines, i = l.findIndex(x => x.title === 'Chk overnight orders'); if (i >= 0) l.splice(i, 1); });
+      return 'no day named · routine Thursdays, read-only · stock trigger, order total hidden, customer words warned · rule read back before the yes · 30 → 50 named · MANAGE → rules';
+    });
     await step('smoke: no errors after the run', async () => { if (errors.length) throw new Error(errors[0]); });
   } catch (e) { bad('smoke: browser', e.message); }
   finally { if (browser) await browser.close(); }
@@ -1450,6 +1519,33 @@ else {
       if (typeof t.on !== 'boolean' || !Array.isArray(t.problems)) throw new Error('shape: ' + JSON.stringify(t).slice(0, 160));
       if (t.on) throw new Error('the check\'s office started the bots (AO_NO_TELEGRAM=1 should keep them off)');
       return t.configured ? 'bots configured here · kept off in the check' : 'no bots configured here';
+    });
+    await step('server: the Automations screen makes and edits a routine, a trigger and a rule; a bad edit is refused by name; a rule is read back first (no Claude run)', async () => { // STORE spec 0006
+      const RT = path.join(cfg.brainPath, 'Agents Office', 'routines.json'), TF = path.join(cfg.brainPath, 'Agents Office', 'triggers.json'), RF = path.join(cfg.brainPath, 'Agents Office', 'approvals.json');
+      const mine = [RT, TF, RF].filter(f => fs.existsSync(f)); if (mine.length) return `left untouched: ${mine.map(f => path.basename(f)).join(', ')} of yours (these checks run only when the brain has none)`;
+      const send = async (p, b) => { const r = await fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }); return { status: r.status, ...(await r.json()) }; };
+      const desk = up.agents.find(x => x.department === 'delivery' && !x.lead), lead = up.agents.find(x => x.department === 'delivery' && x.lead), ops = up.agents.find(x => x.department === 'ops' && !x.lead);
+      try {
+        const c = await send('/api/routines', { dept: 'delivery', agent: desk.id, title: 'Chk late orders', text: 'List the orders that shipped late', when: { kind: 'weekdays', at: '07:30' }, needsOk: false });
+        if (c.status !== 200 || c.routine.title !== 'Chk late orders' || c.routine.agent !== desk.id || c.routine.needsOk) throw new Error('create with a desk and a title: ' + JSON.stringify(c).slice(0, 200));
+        const badWhen = await send(`/api/routines/${c.routine.id}`, { when: { kind: 'weekly', days: [], at: '07:30' } }); if (badWhen.status !== 400 || !/schedule is not complete/.test(badWhen.error)) throw new Error('a bad schedule was not refused by name: ' + JSON.stringify(badWhen));
+        const wrongDesk = await send(`/api/routines/${c.routine.id}`, { agent: ops.id }); if (wrongDesk.status !== 400 || !/is in Operations, not Delivery/.test(wrongDesk.error)) throw new Error('a desk from another department: ' + JSON.stringify(wrongDesk));
+        const team = await send(`/api/routines/${c.routine.id}`, { team: true, when: { kind: 'weekly', days: [1, 4], at: '09:00' } });
+        if (team.status !== 200 || !team.routine.team || team.routine.agent !== lead.id || team.routine.desc !== 'Mon, Thu · 09:00') throw new Error('team edit: ' + JSON.stringify(team).slice(0, 200));
+        const t = await send('/api/triggers', { event: 'order_created', dept: 'delivery', title: 'Chk big orders', text: 'Draft a thank you note.', filter: { minTotal: 200 }, dailyCount: 3 });
+        if (t.status !== 200 || t.trigger.id !== 'chk-big-orders' || t.desc !== 'on a new order over 200' || !t.triggers.some(x => x.id === 'chk-big-orders')) throw new Error('trigger create: ' + JSON.stringify(t).slice(0, 200));
+        const tb = await send('/api/triggers/chk-big-orders', { event: 'order_created', dept: 'delivery', text: 'x', dailyCount: 500 }); if (tb.status !== 400 || !/dailyCount must be a whole number from 1 to 100/.test(tb.error)) throw new Error('a bad trigger edit: ' + JSON.stringify(tb));
+        const te = await send('/api/triggers/chk-big-orders', { event: 'order_created', dept: 'delivery', title: 'Chk big orders', text: 'Draft a thank you note.', filter: { minTotal: 300 }, dailyCount: 3 }); if (te.trigger.filter.minTotal !== 300) throw new Error('trigger edit');
+        const dry = await send('/api/approvals', { title: 'Chk replies', kinds: ['reply'], dailyCount: 5, routines: ['chk-big-orders'], dry: true });
+        if (!dry.dry || dry.desc !== 'reply · at most 5 a day · from chk-big-orders' || fs.existsSync(RF) && JSON.parse(fs.readFileSync(RF, 'utf8')).rules.length) throw new Error('a dry run: ' + JSON.stringify(dry).slice(0, 200));
+        const rc = await send('/api/approvals', { title: 'Chk replies', kinds: ['reply'], dailyCount: 5, routines: ['chk-big-orders'] }); if (rc.status !== 200 || rc.rule.id !== 'chk-replies' || rc.currency !== cfg.currency) throw new Error('rule create: ' + JSON.stringify(rc).slice(0, 200));
+        const wide = await send('/api/approvals/chk-replies', { title: 'Chk replies', kinds: ['reply'], dailyCount: 9, dry: true }); if (wide.widens.join('; ') !== 'the daily count 5 → 9; no longer limited to these routines and triggers: chk-big-orders') throw new Error('widens: ' + JSON.stringify(wide.widens));
+        const nb = await send('/api/approvals/chk-replies', { title: 'Chk replies', kinds: ['reply'] }); if (nb.status !== 400 || !/needs dailyCount/.test(nb.error)) throw new Error('a rule edit with no cap: ' + JSON.stringify(nb));
+        const plain = await fetch(base + '/api/approvals', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify({ title: 'Chk sneaky', kinds: ['refund'], max: 999, currency: 'USD', dailyMax: 9999 }) }); // what a web page could send without a CORS preflight
+        if (plain.status !== 415 || JSON.parse(fs.readFileSync(RF, 'utf8')).rules.some(r => r.id === 'chk-sneaky')) throw new Error('a text/plain POST wrote a rule: ' + plain.status);
+        if ((await send('/api/approvals/nope', { kinds: ['reply'], dailyCount: 1 })).status !== 404 || (await send('/api/triggers/nope', {})).status !== 404) throw new Error('editing an unknown one must be a 404');
+        return `routine with a desk and a title, no Claude run · bad schedule and wrong desk refused by name · team moves it to ${lead.name} · trigger made, bad cap refused, edited · rule read back, made, a wider edit named, no cap refused · text/plain refused · 404s`;
+      } finally { for (const f of [RT, TF, RF]) fs.rmSync(f, { force: true }); }
     });
     await step('server: rejects an empty task', async () => { const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"dept":"sales","text":""}' }); if (r.status !== 400) throw new Error('status ' + r.status); });
     if (chromium) await step('server: the served office shows real work only — no demo tasks or counters — and keeps the connector bar short', async () => { // STORE (25 Oct 2026)

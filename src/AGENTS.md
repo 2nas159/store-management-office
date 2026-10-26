@@ -11,6 +11,8 @@ Everything the owner sees: the isometric office, the Task Status panel, chats, t
 | `main.js` | Scene setup, camera, pods, desks, people, the render loop |
 | `tasks.js` | The work layer: command bar, task feed, routines, approvals, polling `/api/*` |
 | `calendar.js` | The calendar (P): days, projected routine runs, scheduling from a date |
+| `automations.js` | The Automations screen (A): routines, store triggers and auto approve rules, list and editor (store fork, spec 0006) |
+| `rules.js`, `triggerdefs.js` | Shared with the server: the checks and words for a rule and a trigger (`approvals.mjs`, `triggers.mjs` re-export them) |
 | `data.js` | Departments, the 35 seats and their grid slots, design tokens |
 | `v1data.js` | Demo content carried over from v1; do not hand edit |
 | `when.js`, `models.js` | Shared with the server: schedules and model names |
@@ -21,7 +23,7 @@ Everything the owner sees: the isometric office, the Task Status panel, chats, t
 ## Conventions
 
 - Every feature works in two modes: live (served, talks to `/api`) and demo (opened as a file, session only, simulated). `isLive()` decides; keep the demo path working, the smoke checks run against it.
-- Code shared with the server (`when.js`, `models.js`, `data.js`) must stay free of DOM and Node APIs.
+- Code shared with the server (`when.js`, `models.js`, `data.js`, `actions.js`, `rules.js`, `triggerdefs.js`) must stay free of DOM and Node APIs.
 - Text the owner reads is plain words and full sentences, matching the existing copy.
 - Rebuild with `node build.mjs` after any change here; the server serves the built file, not the source.
 
