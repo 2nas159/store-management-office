@@ -345,6 +345,13 @@ await step('browser: tools.browser puts --chrome and the Chrome server in the ag
   const b = m.browserState();
   return `--chrome · mcp__claude-in-chrome allowed · deny works · --no-chrome when off · tile baked · this machine: ${b.installed ? 'extension paired' + (b.device ? ' (' + b.device + ')' : '') : 'extension NOT paired'}`;
 });
+await step('cli: a run hands Claude its prompts by file and stdin, never on the command line (Windows caps it at 32,767 characters)', async () => { // STORE (26 Oct 2026): spawn ENAMETOOLONG on a team synth
+  const src = fs.readFileSync(path.join(ROOT, 'serve.mjs'), 'utf8'), body = src.slice(src.indexOf('async function askX('), src.indexOf('const ask = async'));
+  if (!body.includes("'--system-prompt-file', systemFile") || /'--system-prompt', system\b/.test(body)) throw new Error('the system prompt is not passed as a file');
+  if (/'-p', user\b/.test(body) || !/p\.stdin\.end\(user\)/.test(body) || !/stdio: \['pipe', 'pipe', 'pipe'\]/.test(body)) throw new Error('the request is not passed on stdin');
+  if (!/cleanup\(\)/.test(body.slice(body.indexOf("p.on('close'")))) throw new Error('the prompt file is not removed when the run ends');
+  return 'system prompt → --system-prompt-file (outside the run folder) · request → stdin · file removed on close and on failure';
+});
 await step('calendar: a routine can start on a date, and projects forward day by day', async () => { // V3.2.1
   const w = await import('./src/when.js');
   const now = new Date('2026-09-16T10:00:00').getTime();

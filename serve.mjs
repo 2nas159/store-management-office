@@ -143,7 +143,11 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
   }
   fs.mkdirSync(CLI_CWD, { recursive: true });
   const allowed = only ? only : tools ? mcp.allowedTools() : [];
-  const args = ['-p', user, '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt', system,
+  // STORE (26 Oct 2026): the prompts go by file and stdin, not argv — a team lead's synth (skills + notes + every piece) passed
+  // Windows' 32,767-character command line and failed with spawn ENAMETOOLONG. The file sits outside CLI_CWD, so the run's cwd stays empty.
+  const promptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-office-prompt-')), systemFile = path.join(promptDir, 'system.txt');
+  fs.writeFileSync(systemFile, system);
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--system-prompt-file', systemFile,
     '--disallowedTools', 'Bash,Edit,Write,Read,Glob,Grep,Agent,NotebookEdit,Task' + (allowed.includes('WebFetch') && !only ? '' : ',WebFetch,WebSearch')];
   if (allowed.length) args.push('--allowedTools', allowed.join(','));
   args.push(...(tools && !only ? mcp.cliArgs() : ['--no-chrome'])); // V3.2 (16 Sep): the owner's Chrome, when tools.browser is on
@@ -151,9 +155,11 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
   args.push(...modelArgs(model, effort));
   const env = { ...process.env }; delete env.CLAUDECODE; // the CLI refuses to nest inside another Claude Code session
   return new Promise((resolve, reject) => {
-    const p = spawn('claude', args, { cwd: CLI_CWD, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const cleanup = () => fs.rmSync(promptDir, { recursive: true, force: true });
+    let p; try { p = spawn('claude', args, { cwd: CLI_CWD, env, stdio: ['pipe', 'pipe', 'pipe'] }); } catch (e) { cleanup(); return reject(e); }
+    p.stdin.on('error', () => {}); p.stdin.end(user); // the request: `claude -p` with no prompt argument reads it from stdin
     let out = '', err = '', text = '', used = [], gotResult = false, usageOut = null, modelUsageOut = null, modelUsed = null; const calls = [];
-    const fail = e => { e.calls = calls; reject(e); };
+    const fail = e => { cleanup(); e.calls = calls; reject(e); };
     const timer = setTimeout(() => { p.kill('SIGKILL'); fail(new Error(`Claude took longer than ${timeout / 1000} s`)); }, timeout);
     const feed = line => {
       if (!line.trim()) return;
@@ -170,7 +176,7 @@ async function askX(system, user, { maxTokens = 4000, tools = true, timeout = RU
     p.stderr.on('data', d => { err += d; });
     p.on('error', e => { clearTimeout(timer); fail(new Error(e.code === 'ENOENT' ? 'Claude Code is not installed (claude not found on PATH)' : e.message)); });
     p.on('close', code => {
-      clearTimeout(timer); feed(out);
+      clearTimeout(timer); feed(out); cleanup();
       if (code !== 0 && !gotResult) return fail(new Error(`claude exited ${code}${err ? ': ' + err.trim().slice(0, 300) : ''}`));
       if (!gotResult) { try { text = String(JSON.parse(out).result || '').trim(); } catch { text = out.trim(); } }
       bumpUsage(usageOut, modelUsageOut); // STORE: modelUsage is the whole run (Chrome's helper too)
