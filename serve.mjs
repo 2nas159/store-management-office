@@ -58,6 +58,7 @@ import * as shopify from './shopify.mjs'; // STORE (25 Oct 2026): the office's o
 import * as triggers from './triggers.mjs'; // STORE (25 Oct 2026): store events start trigger tasks (spec 0004)
 import * as telegram from './telegram.mjs'; // STORE (25 Oct 2026): the team on Telegram (spec 0005)
 import { createTeam } from './team.mjs';
+import { lane } from './lanes.mjs'; // STORE (30 Oct 2026): the work lane and the send lane
 import * as meter from './meter.mjs'; // STORE (25 Oct 2026): tokens per task, per chat turn and per Telegram message
 import { fromRun, add as addTokens, tokensText } from './src/tokens.js';
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
@@ -427,8 +428,8 @@ async function approvalsChat(a, t) { // a department lead: "auto approve …" (r
 }
 const agentName = id => AGENTS.find(a => a.id === id)?.name || id;
 // routine-driven runs go one at a time, so a burst of catch-ups after a long sleep does not spawn five Claude processes at once
-let queue = Promise.resolve();
-const enqueue = fn => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
+const enqueue = lane();
+const enqueueSend = lane(); // STORE (30 Oct 2026): an approved send gets its own lane, so it never waits behind a long draft; sends stay one at a time
 function fire(r, { due = Date.now(), late = false, by = 'routine' } = {}) { // the routine becomes a task and runs here, page or no page
   const task = { id: nid(), dept: r.dept, agent: r.agent, title: r.title, text: r.text, plan: r.plan || [], eta: 15, why: '', state: 'next', addedAt: Date.now(), by, routine: r.id, when: r.desc || describe(r.when), needsOk: r.needsOk, due, late, routineModel: r.model || undefined, routineEffort: r.effort || undefined, team: r.team && TEAMS.enabled ? { lead: r.agent, asked: 'routine' } : undefined };
   const list = load(); list.push(task); save(list);
@@ -468,7 +469,7 @@ async function ownerDecides(id, kind, note = '') {
   }
   console.log(`${kind === 'approve' ? '✅' : '↩'} ${task.id} ${kind === 'approve' ? 'approved — ' + agentName(task.agent) + ' is sending' : 'sent back: ' + note.slice(0, 80)}`);
   team?.decided(task.id, kind, note).catch(() => {}); // the Telegram card loses its buttons; a sent-back draft gets a new card when reworked
-  enqueue(() => runServerTask(task.id, kind === 'approve' ? { approve: true } : { feedback: note || 'Not this. Rework it.' }))
+  (kind === 'approve' ? enqueueSend : enqueue)(() => runServerTask(task.id, kind === 'approve' ? { approve: true } : { feedback: note || 'Not this. Rework it.' }))
     .then(t => { if (kind === 'reject' && note && t && !t.error) { const a = AGENTS.find(x => x.id === t.agent); return learn.classify(ask, a, t, note).then(v => { const r = learn.record(BRAIN, a, t, note, v); console.log(`  ↳ ${a.name} ${r.standing ? 'learned a rule' : 'noted a one-off'}: ${r.line.slice(0, 100)}`); }); } })
     .catch(e => console.warn('approval:', e.message));
   return { status: 200, body: { ok: true, id: task.id, state: 'doing' } };
@@ -502,7 +503,7 @@ async function runServerTask(id, { feedback, approve, strict = false } = {}) {
   task.usage = addTokens(task.usage, spent);
   list = load(); const i = list.findIndex(t => t.id === task.id); if (i >= 0) list[i] = task; save(list);
   console.log(`${task.error ? '✗' : task.state === 'waiting' ? '⏸' : task.state === 'doing' ? '⚡' : '✓'} ${task.id} ${task.error ? 'failed' : task.state === 'waiting' ? 'waiting for your OK' : task.state === 'doing' ? 'sending by rule' : 'done'} (${task.result.length} chars, ${tokensText(task.usage).slice(3)}${task.tools?.length ? ', tools: ' + task.tools.join(' ') : ''}${task.note ? ', note: ' + task.note : ''})`);
-  if (!approve && task.state === 'doing' && task.autoApproved) enqueue(() => runServerTask(task.id, { approve: true, strict: true })); // STORE spec 0002: the same gated run as APPROVE, strict
+  if (!approve && task.state === 'doing' && task.autoApproved) enqueueSend(() => runServerTask(task.id, { approve: true, strict: true })); // STORE spec 0002: the same gated run as APPROVE, strict
   team?.notify(task).catch(e => console.warn('telegram:', e.message)); // STORE spec 0005: a draft waiting → the secretary's card; done → the lead's chat
   return task;
 }

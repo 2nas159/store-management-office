@@ -606,6 +606,21 @@ await step('approvals: the strict gate of an auto run blocks a call without the 
     return 'a2 by its arguments · wrong amount blocked with the reason · minor units pass · the reason lands on the action · manual run passes the same call';
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
+await step('lanes: a send runs while a long draft is still going; each lane keeps its order and survives a throw', async () => { // STORE (30 Oct 2026)
+  const { lane } = await import('./lanes.mjs');
+  const work = lane(), send = lane(), seen = [], wait = ms => new Promise(r => setTimeout(r, ms));
+  const long = work(async () => { await wait(300); seen.push('draft'); });
+  work(async () => { seen.push('routine'); });
+  send(async () => { throw new Error('boom'); }).catch(() => {});
+  const a = send(async () => { await wait(20); seen.push('send1'); }), b = send(async () => { seen.push('send2'); });
+  await Promise.all([a, b]);
+  if (seen.join() !== 'send1,send2') throw new Error('the sends waited behind the draft or ran out of order: ' + seen.join());
+  await long; await wait(0);
+  if (seen.join() !== 'send1,send2,draft,routine') throw new Error('the work lane lost its order: ' + seen.join());
+  const s = fs.readFileSync(path.join(ROOT, 'serve.mjs'), 'utf8');
+  if (!/\(kind === 'approve' \? enqueueSend : enqueue\)/.test(s) || !/autoApproved\) enqueueSend\(/.test(s)) throw new Error('serve.mjs does not put APPROVE and rule sends on the send lane');
+  return 'sends done before the 300 ms draft · each lane in order · a throw does not stop the lane · serve.mjs wires APPROVE and rule sends to it';
+});
 await step('approvals: a lead turns a sentence into a rule only after a yes; list, pause and match by words', async () => { // AC-9
   const ap = await import('./approvals.mjs');
   for (const y of ['auto approve refunds under 30 USD, at most 200 a day', 'Please auto-approve small discounts']) if (!ap.proposes(y)) throw new Error('not taken as a rule: ' + y);
