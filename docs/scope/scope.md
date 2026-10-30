@@ -25,6 +25,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Shopify event triggers | Slice 4 | in-progress |
 | 7 | The team on Telegram | Slice 5 | in-progress |
 | 8 | The Automations screen | Slice 6 | in-progress |
+| 9 | Sequential CEO goal steps | Slice 7 | in-progress |
 
 ## Already there
 
@@ -151,6 +152,20 @@ spec [0006](../specs/0006-automations-screen.md) · code in `src/automations.js`
 - [ ] Verify it: `/check verify automations screen`
 - [ ] Review it: `/check review automations screen`
 
+## Slice 7: Work that runs in order
+
+### 9. Sequential CEO goal steps · in-progress
+A CEO goal whose steps wait on each other: a step starts only when the steps before it are approved and fully sent, and it gets their results as fenced data. Every step stays a draft that waits for the owner; a doubtful send stops the chain and is never retried.
+spec [0007](../specs/0007-sequential-goal-steps.md) · code in `goalsteps.mjs`, `team.mjs`, `serve.mjs`, `approvals.mjs`, `triggers.mjs`, `check.mjs`
+**Done when:** a goal with an ordered plan starts each step only after its earlier steps are approved with every action done, hands their results on, offers RETRY only where nothing was sent, can be stopped, and heals after a missed notice or a restart.
+- [x] Design it (spec): `/architect sequential goal steps`
+- [ ] Build it: `/develop sequential goal steps`
+  - [ ] Green baseline, then the pure step logic and the fence (AC-1, AC-2, AC-4, AC-5, AC-9)
+  - [ ] Thread: one real two step chain on Telegram, the server fields, the rule skip (AC-3, AC-5, AC-6, AC-7, AC-10, AC-13)
+  - [ ] Failures, buttons, STOP, the tick, old goals, docs (AC-8, AC-9, AC-11, AC-12, AC-14, AC-15)
+- [ ] Verify it: `/check verify sequential goal steps`
+- [ ] Test it: `/test sequential goal steps`
+
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
 - **Store numbers panel**: revenue, average order, conversion, low stock and open tickets from Shopify in the office · needs a decision
@@ -158,6 +173,8 @@ Out of scope for this build pass, kept so the plan stays honest.
 - **More seats or a seventh department**: beyond the fixed 35 desks · needs a decision
 - **Approvable browser actions**: how an approved Chrome action is bounded (call budget, allowed site, final submit check) · needs a decision · from spec 0001
 - **Per action approval and retry**: untick single actions, and approve the not done remainder again, on the 0001 schema · from spec 0001
+- **Follow up tasks (`nextTask`)**: an approved task queues the next task for another department, for store event chains (order → quality check → fulfilment → post purchase email) · needs a decision · from spec 0007
+- **Goals on the page**: a running goal and its waiting steps shown outside Telegram · from spec 0007
 
 ## Legend
 
