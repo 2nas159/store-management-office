@@ -123,10 +123,12 @@ export function decide(task, { rules = [], paused = false, ledger = { entries: [
   }
   return { ok: true, take };
 }
+export const GOAL_WHY = 'a CEO goal step waits for you';
 /** After a draft lands: decide, and on a yes write the ledger FIRST, then mark the task. → { auto: bool, why } */
 // reworked: the draft is a rework after the owner's REJECT — the owner was looking at this one, so it always waits (24 Oct, owner's call)
 export function afterDraft(task, { brainPath, dataDir, sdk = false, now = Date.now(), reworked = false }) {
   delete task.autoApproved; delete task.autoWhy;
+  if (task.goal) { task.autoWhy = GOAL_WHY; return { auto: false, why: GOAL_WHY }; } // STORE spec 0007 (AC-6): a CEO goal step always waits for the owner, before any rule or the ledger is read
   const doc = load(brainPath), ledger = loadLedger(dataDir);
   const d = reworked && doc.rules.length ? { why: 'you sent this one back, so its rework waits for you' } : decide(task, { rules: doc.rules, paused: doc.paused, ledger, sdk, now });
   if (!d.ok) { if (d.why) task.autoWhy = d.why; return { auto: false, why: d.why }; }

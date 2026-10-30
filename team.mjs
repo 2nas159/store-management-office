@@ -11,6 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { ROLES, client, poll } from './telegram.mjs';
 import { tokensText, add as addTokens } from './src/tokens.js';
+import * as GS from './goalsteps.mjs'; // STORE spec 0007: a goal's steps in order
 
 const DEPTS6 = ['emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'];
 const YES = /^\s*(yes|y|yep|yes please|confirm|do it|go ahead|ok|okay)\s*[.!]?\s*$/i, NO = /^\s*(no|nope|cancel|drop it|stop)\b/i;
@@ -21,7 +22,7 @@ const readJSON = (p, fallback) => { try { return JSON.parse(fs.readFileSync(p, '
 const parseJSON = t => { const s = String(t).replace(/```json|```/g, ''); return JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)); };
 
 /**
- * ctx (from serve.mjs): { cfg, tg, dataDir, AGENTS, DEPTS, leadOf, tasks(), task(id), addTask({ dept, text, title, needsOk, goal, by }),
+ * ctx (from serve.mjs): { cfg, tg, dataDir, AGENTS, DEPTS, leadOf, tasks(), task(id), addTask({ dept, text, title, needsOk, goal, goalPiece, goalContext, by }),
  *   approve(id), reject(id, note), leadChat(agent, text, history), run({ system, user, gated, model }) → { text, runDenied },
  *   ask(system, user, opts), notes(text), toolsText(), makeRoutine({ dept, text, when }), parseWhen, describeWhen,
  *   approvals, triggers, actions, store() → { line, counts }, log }
@@ -31,6 +32,7 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
   const file = path.join(ctx.dataDir, 'telegram.json'), goalsFile = path.join(ctx.dataDir, 'goals.json'), remindersFile = path.join(ctx.dataDir, 'reminders.json');
   const S = ctx.tg, old = readJSON(file, {});
   const st = { owner: null, group: null, offsets: {}, cards: {}, lastMorning: null, lastWeekly: null, ...old, goals: readJSON(goalsFile, null)?.goals || old.goals || {}, reminders: readJSON(remindersFile, null)?.reminders || old.reminders || [] };
+  for (const g of Object.values(st.goals)) GS.upgrade(g); // STORE spec 0007 (AC-14): a goal saved before steps had keys gets p1 … and no `after`
   const save = () => { fs.mkdirSync(ctx.dataDir, { recursive: true }); const { goals, reminders, ...rest } = st;
     fs.writeFileSync(file, JSON.stringify(rest, null, 1)); fs.writeFileSync(goalsFile, JSON.stringify({ goals }, null, 1)); fs.writeFileSync(remindersFile, JSON.stringify({ reminders }, null, 1)); };
   const bots = {}, problems = {}, history = {}, pending = {}, usernames = {}; // pending[role] = { kind, … } — a read-back waiting for "yes", or a reject note
@@ -102,7 +104,9 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
 
   /* ---------- what the office tells the team (serve calls notify when a task reaches WAITING or DONE) ---------- */
   async function notify(t) {
-    if (!t || !st.owner) return;
+    if (!t) return;
+    if (t.goal) { try { await goalProgress(t.goal); } catch (e) { ctx.log(`🎯 ${t.goal}: ${e.message}`); } } // STORE spec 0007 (AC-13): the chain moves first, paired or not, before any message
+    if (!st.owner) return;
     if (t.state === 'waiting' && !st.cards[t.id]) { if (bots.secretary) await sendCard(t); else await say(t.dept, cardText(t)); }
     if (t.state !== 'done') return;
     if (st.cards[t.id]) {
@@ -115,7 +119,6 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
       await say(t.dept, `${head}\n\n${t.result || ''}${foot(t.usage, 'task total')}`, { name: `${(t.title || 'result').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.md` });
       await boardroom(t.dept, `${nameOf(t.dept)}: ${head}`);
     }
-    if (t.goal) await goalProgress(t.goal);
   }
 
   /* ---------- the secretary ---------- */
@@ -197,6 +200,7 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
     const all = ctx.tasks(), since = now() - 18 * 3600e3, waiting = all.filter(t => t.state === 'waiting'), overnight = all.filter(t => t.state === 'done' && t.doneAt > since && !t.piece);
     const store = ctx.store(), lines = [`Good ${new Date(now()).getHours() < 12 ? 'morning' : 'day'}. ${new Date(now()).toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}`, ''];
     lines.push(waiting.length ? `WAITING FOR YOU (${waiting.length})` : 'Nothing is waiting for your OK.'); for (const t of waiting.slice(0, 8)) lines.push(`• ${t.title} — ${ctx.AGENTS.find(a => a.id === t.agent)?.name || t.agent}${Array.isArray(t.actions) ? ' · ' + ctx.actions.summary(t.actions) : ''}`);
+    const stuck = stuckLines(); if (stuck.length) lines.push('', ...stuck); // STORE spec 0007 (AC-12): a goal held by a failed step or a doubtful send
     if (overnight.length) { lines.push('', `DONE SINCE YESTERDAY (${overnight.length})`); for (const t of overnight.slice(0, 8)) lines.push(`• ${t.title}${t.autoApproved ? ' · sent by rule' : t.approved ? ' · sent after your OK' : t.trigger ? ' · store event' : t.routine ? ' · routine' : ''}${t.error ? ' · failed' : ''}`); }
     if (store?.line) lines.push('', `STORE: ${store.line}`);
     let today = ''; try { today = (await ctx.run({ system: persona('secretary', READ_ONLY), user: 'For the owner\'s morning brief: list today\'s calendar events (time — title), then at most five emails that need the owner today (from — subject — why). Plain lines, no preamble. Say "nothing" for an empty part.', gated: true })).text; } catch (e) { today = `(calendar and inbox not read: ${e.message})`; }
@@ -238,7 +242,7 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
     const at = /^\s*@(\w+)\s+([\s\S]+)$/.exec(text); if (at) return forward(at[1], at[2]);
     const g = /^\s*\/?goal\b[:\s]*([\s\S]+)$/i.exec(text); if (g) return planGoal(g[1].trim());
     if (/^\/?(brief|weekly brief)\s*$/i.test(text)) return weeklyBrief(true);
-    if (/^\/?goals\s*\??$/i.test(text)) { const gs = Object.values(st.goals).filter(x => x.state !== 'dropped').slice(-8); return gs.length ? gs.map(x => `• ${x.text} — ${x.state}${x.pieces ? ` (${x.pieces.filter(p => p.done).length}/${x.pieces.length})` : ''}`).join('\n') : 'No goals yet. Say "goal: …".'; }
+    if (/^\/?goals\s*\??$/i.test(text)) { const gs = Object.values(st.goals).filter(x => x.state !== 'dropped').slice(-8); return gs.length ? gs.map(x => `• ${x.text} — ${x.state}${x.pieces ? ` (${x.pieces.filter(p => p.done).length}/${x.pieces.length} steps done)` : ''}`).join('\n') : 'No goals yet. Say "goal: …".'; }
     // plain text the CEO decides is a goal (AC-6) comes back as one "GOAL: …" line and is planned like "goal: …"
     const reply = await freeChat('ceo', text, 'If the owner\'s message sets a goal for the business that needs work from the departments (not a question, not a single small errand), answer with exactly one line and nothing else: "GOAL: <the goal, in the owner\'s words>".');
     const gl = /^\s*GOAL:\s*(.+?)\s*$/i.exec(reply || ''); if (gl && !/\n/.test(reply.trim())) { delete pending.ceo; return planGoal(gl[1]); }
@@ -246,36 +250,118 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
   }
   async function planGoal(text, change = null, id = null) {
     let plan, planned = null;
-    try { ({ value: plan, usage: planned } = await measure(async () => parseJSON(await ctx.ask(persona('ceo', 'Plan the owner\'s goal across the departments. Return ONLY a JSON object.'), `Goal: "${text}"${change ? `\nThe owner wants this changed: "${change}"` : ''}\nDepartments and their leads: ${DEPTS6.map(d => `${d} (${ctx.DEPTS[d].name}, lead ${lead(d)?.name})`).join('; ')}\n\nReturn {"pieces":[{"dept":"<key>","title":"<under 80 chars>","text":"<what that department should do, as one clear task>"}],"why":"<one sentence>"} with 1 to 6 pieces, at most one per department, only departments that are really needed.\n\nCOMPANY NOTES\n${ctx.notes(text)}`, { maxTokens: 1500, timeout: 150000, model: S.roles.ceo?.model || 'sonnet' })))); }
+    try { ({ value: plan, usage: planned } = await measure(async () => parseJSON(await ctx.ask(persona('ceo', 'Plan the owner\'s goal across the departments. Return ONLY a JSON object.'), `Goal: "${text}"${change ? `\nThe owner wants this changed: "${change}"` : ''}\nDepartments and their leads: ${DEPTS6.map(d => `${d} (${ctx.DEPTS[d].name}, lead ${lead(d)?.name})`).join('; ')}\n\nReturn {"pieces":[{"dept":"<key>","title":"<under 80 chars>","text":"<what that department should do, as one clear task>","after":[<numbers of earlier pieces in this list whose approved result this piece needs first>]}],"why":"<one sentence>"} with 1 to 6 pieces in the order the work happens, at most two per department, only departments that are really needed. "after" counts from 1; leave it [] for a piece that can start at once. A piece starts only when every piece in its "after" is approved and sent, and it gets their results.\n\nCOMPANY NOTES\n${ctx.notes(text)}`, { maxTokens: 1500, timeout: 150000, model: S.roles.ceo?.model || 'sonnet' })))); }
     catch { return 'I could not plan that. Say the goal again, more concretely.'; }
-    const seen = new Set(), pieces = (plan.pieces || []).filter(x => DEPTS6.includes(x.dept) && x.text && !seen.has(x.dept) && seen.add(x.dept)).slice(0, 6).map(x => ({ dept: x.dept, title: String(x.title || x.text).slice(0, 80), text: String(x.text).slice(0, 1500) }));
+    const pieces = GS.planPieces(plan.pieces, DEPTS6); // STORE spec 0007 (AC-1, AC-2): at most two per department, `after` checked
     if (!pieces.length) return 'That goal does not need any department I can see. Say more about what should happen.';
     id = id || crypto.randomUUID().slice(0, 8);
-    st.goals[id] = { id, text, pieces, why: String(plan.why || ''), state: 'planned', at: now(), usage: addTokens(st.goals[id]?.usage, planned) }; save(); // usage: the planning, CHANGE re-plans included
-    await say('ceo', `GOAL: ${text}\n${plan.why ? plan.why + '\n' : ''}\n${pieces.map((x, i) => `${i + 1}. ${nameOf(x.dept)} — ${x.title}`).join('\n')}\n\nEvery piece runs as a draft: nothing goes out without your OK (or a rule). To change the plan, press CHANGE and tell me what.${foot(planned, 'planning')}`, { buttons: [[{ text: 'START', data: `g:${id}:s` }, { text: 'CHANGE', data: `g:${id}:c` }, { text: 'DROP', data: `g:${id}:d` }]] });
+    st.goals[id] = { id, text, pieces, why: String(plan.why || ''), state: 'planned', at: now(), told: {}, usage: addTokens(st.goals[id]?.usage, planned) }; save(); // usage: the planning, CHANGE re-plans included
+    const g = st.goals[id];
+    await say('ceo', `GOAL: ${text}\n${plan.why ? plan.why + '\n' : ''}\n${pieces.map((x, i) => `${i + 1}. ${nameOf(x.dept)} — ${x.title}${afterText(g, x)}`).join('\n')}\n\nEvery step is a draft that waits for your OK; a rule never sends one. A step with "after" starts when those steps are approved and sent, and builds on their results. To change the plan, press CHANGE and tell me what.${foot(planned, 'planning')}`, { buttons: [[{ text: 'START', data: `g:${id}:s` }, { text: 'CHANGE', data: `g:${id}:c` }, { text: 'DROP', data: `g:${id}:d` }]] });
     return null;
   }
-  async function goalButton(role, q, id, what) {
-    const g = st.goals[id]; if (!g || g.state !== 'planned') return bots[role].answer(q.id, 'That plan is no longer open.');
-    if (what === 'd') { g.state = 'dropped'; save(); await bots[role].answer(q.id, 'Dropped.'); return; }
-    if (what === 'c') { pending[role] = { kind: 'change', goal: g }; await bots[role].answer(q.id); return say('ceo', 'What should change in the plan?'); }
-    g.state = 'running'; save(); await bots[role].answer(q.id, 'Started.');
-    for (const p of g.pieces) { const t = await ctx.addTask({ dept: p.dept, text: p.text, title: p.title, needsOk: true, goal: id, by: 'ceo' }); p.task = t.id; } // always drafts (spec 0005 AC-7)
-    save(); await say('ceo', `Started: ${g.pieces.length} piece${g.pieces.length > 1 ? 's' : ''} with ${g.pieces.map(p => nameOf(p.dept)).join(', ')}. I'll report when they are in.`);
-    await boardroom('ceo', `New goal: ${g.text} — ${g.pieces.map(p => nameOf(p.dept)).join(', ')}`);
+
+  /* ---------- a goal, step by step (STORE spec 0007): state read from the tasks every pass, never stored ---------- */
+  const mine = new Set(); // `${goal}:${key}` whose task this process is creating; any other `starting` was cut short by a restart
+  let lastGoals = 0;
+  const stepNo = (g, key) => g.pieces.findIndex(p => p.key === key) + 1;
+  const pieceOf = (g, key) => g.pieces.find(p => p.key === key);
+  const afterText = (g, p) => p.after.length ? ` (after ${p.after.map(k => stepNo(g, k)).join(', ')})` : '';
+  async function goalButton(role, q, id, what) { // each button checks its own state; the stored change is saved before any await (AC-15)
+    const g = st.goals[id], [w, key] = String(what || '').split('-'), no = () => bots[role].answer(q.id, 'That is no longer open.');
+    if (!g) return no();
+    if (['s', 'c', 'd'].includes(w)) {
+      if (g.state !== 'planned') return no();
+      if (w === 'd') { g.state = 'dropped'; save(); await bots[role].answer(q.id, 'Dropped.'); return; }
+      if (w === 'c') { pending[role] = { kind: 'change', goal: g }; await bots[role].answer(q.id); return say('ceo', 'What should change in the plan?'); }
+      g.state = 'running'; save(); await bots[role].answer(q.id, 'Started.');
+      await boardroom('ceo', `New goal: ${g.text} — ${g.pieces.map(p => nameOf(p.dept)).join(', ')}`);
+      return goalProgress(id); // starts the pieces with an empty `after` (AC-3), always drafts
+    }
+    if (w === 'x') { // STOP (AC-11): nothing new starts; drafts already waiting stay for the owner
+      if (g.state !== 'running') return no();
+      g.state = 'stopped'; save(); await bots[role].answer(q.id, 'Stopped.');
+      const never = g.pieces.filter(p => !p.task && !p.tries.length).length; ctx.log(`🎯 ${id} stopped, ${never} step${never === 1 ? '' : 's'} never started`);
+      return report(g, true);
+    }
+    const p = pieceOf(g, key); if (!p) return no();
+    const s = GS.pieceState(p, p.task ? ctx.task(p.task) : undefined).state;
+    if (w === 'r') { // RETRY (AC-8): only where nothing was ever sent
+      if (g.state !== 'running' || s !== 'failed') return no();
+      delete g.told[p.task || 'start:' + p.key]; if (p.task) p.tries.push(p.task); p.task = null; p.startError = null; save();
+      await bots[role].answer(q.id, 'Trying that step again.');
+      return goalProgress(id);
+    }
+    if (w === 'k') { // CONTINUE (AC-9): the owner counts this exact task as finished
+      if (g.state !== 'running' || s !== 'doubtful') return no();
+      p.continued = p.task; save(); await bots[role].answer(q.id, 'Counted as done. Moving on.');
+      return goalProgress(id);
+    }
+    if (w === 'w') return bots[role].answer(q.id, s === 'doubtful' ? 'Kept waiting.' : 'That is no longer open.');
+    return no();
   }
-  async function goalProgress(id) {
+  async function startPiece(g, p) { // a draft with the piece's own text; earlier steps only as fenced data in goalContext (AC-5)
+    const earlier = p.after.map(k => { const e = pieceOf(g, k); return { n: stepNo(g, k), piece: e, task: e.task ? ctx.task(e.task) : undefined }; });
+    const goalContext = GS.stepText(p, earlier, { deptName: d => ctx.DEPTS[d]?.name || d, outcomeLine: ctx.actions.outcomeLine, fence: ctx.triggers.fence });
+    const last = p.tries.length ? ctx.task(p.tries.at(-1)) : null;
+    const text = p.text + (last?.lastFeedback ? `\n\nThe owner's last note on this step: ${last.lastFeedback}` : '');
+    return ctx.addTask({ dept: p.dept, text, title: p.title, needsOk: true, goal: g.id, goalPiece: p.key, ...(goalContext ? { goalContext } : {}), by: 'ceo' });
+  }
+  async function goalProgress(id) { // the chain moves first; messages only after (AC-13)
     const g = st.goals[id]; if (!g || g.state !== 'running') return;
-    const ts = g.pieces.map(p => ctx.task(p.task)); for (const [i, t] of ts.entries()) g.pieces[i].done = !!t && (t.state === 'done' || t.state === 'waiting');
-    if (!ts.every(t => t && (t.state === 'done' || t.state === 'waiting'))) return save();
-    g.state = 'ready'; save();
-    const body = ts.map((t, i) => `--- ${nameOf(g.pieces[i].dept)}: ${t.title} (${t.state === 'waiting' ? 'draft waiting for the owner' : t.error ? 'failed' : 'done'})\n${String(t.draft || t.result || '').slice(0, 1500)}`).join('\n\n');
-    let summary = '', wrote = null; try { ({ value: summary, usage: wrote } = await measure(() => ctx.ask(persona('ceo', 'Report on the goal from the pieces below: what was done, what waits for the owner\'s OK, what is still open, and the one next step. Plain text.'), `Goal: ${g.text}\n\n${body}`, { maxTokens: 900, timeout: 150000, model: S.roles.ceo?.model || 'sonnet' }))); } catch (e) { summary = 'The pieces are in (I could not write the summary: ' + e.message + ').'; }
-    const waits = ts.filter(t => t.state === 'waiting').length;
-    g.usage = ts.reduce((u, t) => addTokens(u, t.usage), addTokens(g.usage, wrote)); save(); // the goal's whole cost: planning, every piece so far, this report
-    await say('ceo', `GOAL IN: ${g.text}\n\n${summary}${waits ? `\n\n${waits} draft${waits > 1 ? 's' : ''} wait${waits > 1 ? '' : 's'} for your OK with the secretary.` : ''}${foot(g.usage, 'goal total')}`);
-    await boardroom('ceo', `Goal in: ${g.text}`);
+    const go = GS.advance(g, ctx.task).start;
+    for (const k of go) { pieceOf(g, k).starting = now(); mine.add(`${id}:${k}`); } // marked and saved before the first await: a second pass cannot start them again
+    if (go.length) save();
+    const started = [];
+    for (const k of go) {
+      const p = pieceOf(g, k);
+      try { p.task = (await startPiece(g, p)).id; started.push(p); ctx.log(`🎯 ${id} step ${k} → ${p.dept}${p.after.length ? ` (after ${p.after.join(', ')})` : ''}`); }
+      catch (e) { p.startError = String(e?.message || e).slice(0, 200); }
+      finally { p.starting = null; mine.delete(`${id}:${k}`); save(); }
+    }
+    if (g.state !== 'running') return; // STOP was pressed while a step was being created; its draft stays
+    const a = GS.advance(g, ctx.task);
+    for (const p of g.pieces) p.done = a.states[p.key].state === 'finished';
+    const tell = st.owner ? [...a.failed, ...a.doubtful].map(k => pieceOf(g, k)).filter(p => !g.told[p.task || 'start:' + p.key]) : [];
+    for (const p of tell) g.told[p.task || 'start:' + p.key] = a.states[p.key].state; // once per task
+    if (a.finished) g.state = 'ready';
+    save();
+    if (started.length) {
+      const wait = g.pieces.filter(p => a.states[p.key].state === 'waiting').length, from = p => p.after.length ? ` (from step${p.after.length > 1 ? 's' : ''} ${p.after.map(k => stepNo(g, k)).join(', ')})` : '';
+      await say('ceo', `${started.map(p => `Step ${stepNo(g, p.key)} of ${g.pieces.length} started: ${nameOf(p.dept)} — ${p.title}${from(p)}`).join('\n')}\n\nEach step is a draft that waits for your OK with the secretary.${wait ? ` ${wait} more start${wait === 1 ? 's' : ''} when the steps before ${wait === 1 ? 'it are' : 'them are'} approved and sent.` : ''}`, { buttons: [[{ text: 'STOP', data: `g:${id}:x` }]] });
+    }
+    for (const p of tell) await tellStep(g, p, a.states[p.key]);
+    if (a.finished) await report(g);
   }
+  async function tellStep(g, p, s) {
+    const n = stepNo(g, p.key), dept = ctx.DEPTS[p.dept]?.name || p.dept;
+    if (s.state === 'failed') { ctx.log(`🎯 ${g.id} step ${p.key} failed: ${s.why}`); return say('ceo', `Step ${n} (${dept}) could not finish: ${s.why}`, { buttons: [[{ text: 'RETRY', data: `g:${g.id}:r-${p.key}` }]] }); }
+    ctx.log(`🎯 ${g.id} step ${p.key} doubtful send, waiting for you`);
+    const out = (ctx.task(p.task)?.actions || []).map(a => '• ' + ctx.actions.outcomeLine(a));
+    return say('ceo', `Step ${n} (${dept}) may not have gone out as approved: ${s.why}.\n\nWhat went out:\n${out.join('\n') || '• nothing on record'}\n\nCONTINUE counts this step as done and starts the steps after it. WAIT keeps them waiting. Nothing is sent again either way.`, { buttons: [[{ text: 'CONTINUE', data: `g:${g.id}:k-${p.key}` }, { text: 'WAIT', data: `g:${g.id}:w-${p.key}` }]] });
+  }
+  async function report(g, stopped = false) { // GOAL IN once every piece is finished, or the report so far on STOP
+    const label = (p, t) => { if (!t) return p.task ? 'the task is gone' : 'never started'; const s = GS.pieceState(p, t);
+      return s.state === 'finished' ? 'done' : s.state === 'running' ? (t.state === 'waiting' ? 'draft waiting for the owner' : 'still working') : s.state === 'doubtful' ? `sent, not all confirmed: ${s.why}` : `failed: ${s.why}`; };
+    const ts = g.pieces.map(p => p.task ? ctx.task(p.task) : undefined);
+    const body = g.pieces.map((p, i) => `--- ${nameOf(p.dept)}: ${ts[i]?.title || p.title} (${label(p, ts[i])})${ts[i] ? '\n' + String(ts[i].draft || ts[i].result || '').slice(0, 1500) : ''}`).join('\n\n');
+    let summary = '', wrote = null; try { ({ value: summary, usage: wrote } = await measure(() => ctx.ask(persona('ceo', `Report on the goal from the pieces below${stopped ? ' (the owner stopped it; some steps never started)' : ''}: what was done, what waits for the owner's OK, what is still open, and the one next step. Plain text.`), `Goal: ${g.text}\n\n${body}`, { maxTokens: 900, timeout: 150000, model: S.roles.ceo?.model || 'sonnet' }))); } catch (e) { summary = 'The pieces are in (I could not write the summary: ' + e.message + ').'; }
+    const waits = ts.filter(t => t?.state === 'waiting').length, never = g.pieces.filter(p => !p.task && !p.tries.length);
+    const every = g.pieces.flatMap(p => [...p.tries, p.task]).filter(Boolean).map(id => ctx.task(id)).filter(Boolean); // the current task and every RETRY
+    g.usage = every.reduce((u, t) => addTokens(u, t.usage), addTokens(g.usage, wrote)); save(); // the goal's whole cost: planning, every piece so far, this report
+    await say('ceo', `${stopped ? 'GOAL STOPPED' : 'GOAL IN'}: ${g.text}\n\n${summary}${never.length ? `\n\nNever started: ${never.map(p => `step ${stepNo(g, p.key)} (${nameOf(p.dept)} — ${p.title})`).join(', ')}.` : ''}${waits ? `\n\n${waits} draft${waits > 1 ? 's' : ''} wait${waits > 1 ? '' : 's'} for your OK with the secretary.` : ''}${foot(g.usage, 'goal total')}`);
+    await boardroom('ceo', `${stopped ? 'Goal stopped' : 'Goal in'}: ${g.text}`);
+  }
+  async function goalsTick() { // once a minute, paired or not: heals a missed notify and a task creation a restart cut short (AC-13)
+    for (const g of Object.values(st.goals).filter(x => x.state === 'running')) {
+      for (const p of g.pieces) if (!p.task && p.starting && !mine.has(`${g.id}:${p.key}`)) {
+        const t = ctx.tasks().filter(x => x.goal === g.id && x.goalPiece === p.key && !p.tries.includes(x.id)).at(-1);
+        p.task = t ? t.id : null; p.starting = null; save(); ctx.log(`🎯 ${g.id} step ${p.key} ${t ? 'adopted ' + t.id : 'starts again'} after a restart`);
+      }
+      try { await goalProgress(g.id); } catch (e) { ctx.log(`🎯 ${g.id}: ${e.message}`); }
+    }
+  }
+  const stuckLines = () => Object.values(st.goals).filter(g => g.state === 'running').flatMap(g => { const a = GS.advance(g, ctx.task); return [...a.failed, ...a.doubtful].map(k => `Goal "${g.text}" waits on step ${stepNo(g, k)}: ${a.states[k].why}`); }); // AC-12
   async function weeklyBrief(asked = false) {
     const week = ctx.tasks().filter(t => t.state === 'done' && t.doneAt > now() - 7 * 864e5 && !t.piece), per = {};
     for (const t of week) per[t.dept] = (per[t.dept] || 0) + 1;
@@ -327,6 +413,7 @@ export function createTeam(ctx, { clientFor = t => client(t), now = () => Date.n
 
   /* ---------- the clock (serve's 20 s tick) ---------- */
   async function tick(t = now()) {
+    if (t - lastGoals >= 60000) { lastGoals = t; await goalsTick(); } // STORE spec 0007 (AC-13): before the pairing check
     if (!st.owner) { if (t >= codeUntil) newCode(); return; }
     for (const r of st.reminders.filter(r => !r.sent && r.at <= t)) { r.sent = true; save(); await say('secretary', `⏰ ${r.text}${t - r.at > 90000 ? ` (late — was due ${new Date(r.at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })})` : ''}${foot(r.usage, 'setting this reminder')}`); }
     st.reminders = st.reminders.filter(r => !r.sent || t - r.at < 7 * 864e5);

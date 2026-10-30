@@ -275,8 +275,11 @@ The team is on Telegram too: eight bots, each its own contact. The **secretary**
 draft that waits for you, with its action list and APPROVE / REJECT (a second tap when it moves
 more than `confirmAbove`), a morning brief, reminders, your calendar, inbox triage and office
 admin by sentence (rules, routines, triggers, always read back before saving). The **CEO** takes
-goals ("goal: get this week's returns answered"), plans them across departments, starts every
-piece as a draft and reports back, plus a weekly brief. Each **department lead** chats as on the
+goals ("goal: get this week's returns answered"), plans them across departments in order, and
+reports back, plus a weekly brief. A step that needs an earlier one starts only when that step is
+approved and every action of it went out, and it gets that work as data; each step is a draft
+that waits for your OK (a rule never sends one), and STOP, RETRY and CONTINUE sit on the CEO's
+messages. Each **department lead** chats as on the
 page and takes work with `/task …`. Create the bots in @BotFather, put their tokens in
 `office.config.local.json`, start the office and send it the pairing code it shows; only your
 Telegram account gets an answer (five wrong pairing codes void the code). The office connects

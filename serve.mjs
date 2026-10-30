@@ -294,7 +294,7 @@ async function run(task, feedback, mode) { // mode: undefined (a task from the b
     : task.routine ? `\nThis is a routine (${task.when}): it runs on the office's own clock and the owner is not at the keyboard. It is now ${new Date().toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${task.late ? `; this run is late, it was due ${new Date(task.due).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}. Do the work for now.`
     : task.dueAt ? `\nThis task was scheduled in advance for ${new Date(task.dueAt).toLocaleString([], { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} and is running now; the owner is not at the keyboard${task.late ? ' and this run is late' : ''}. Do the work for now.` : '';
   const modeLine = modeLineFor(mode, task);
-  const user = `Task: ${task.title}\nOwner's request: ${task.text}` + (task.plan?.length ? `\nAgreed plan: ${task.plan.join(' → ')}` : '') + routineLine + modeLine +
+  const user = `Task: ${task.title}\nOwner's request: ${task.text}` + (task.goalContext ? `\n\n${task.goalContext}\n` : '') + (task.plan?.length ? `\nAgreed plan: ${task.plan.join(' → ')}` : '') + routineLine + modeLine + // STORE spec 0007: earlier goal steps, fenced data, on the draft and every rework
     (feedback ? `\n\nThe owner reviewed your previous version and asked for changes: "${feedback}"\nPrevious version:\n${task.result}` + (mode === 'draft' ? actions.reworkLine(task.actions) : '') : '');
   const { pick, eff } = pickFor(task, a);
   const { text, tools, modelId: ran, runDenied, runGateFailed } = await askFor(mode, path.join(GATES, `${task.id}-run`), system, user, { model: pick.model, effort: eff.effort });
@@ -466,7 +466,7 @@ async function ownerDecides(id, kind, note = '') {
       return { status: 200, body: { ok: true, id: t.id, state: 'done' } };
     }
     const list = load(); const t = list.find(x => x.id === task.id); Object.assign(t, { state: 'doing', startedAt: Date.now(), approving: true }); delete t.ask; save(list); // off WAITING now: a second APPROVE while this one is queued is refused, never a second send
-  }
+  } else if (note) { const list = load(); const t = list.find(x => x.id === task.id); t.lastFeedback = note; save(list); } // STORE spec 0007 (AC-7): a goal step's RETRY carries the owner's last note
   console.log(`${kind === 'approve' ? '✅' : '↩'} ${task.id} ${kind === 'approve' ? 'approved — ' + agentName(task.agent) + ' is sending' : 'sent back: ' + note.slice(0, 80)}`);
   team?.decided(task.id, kind, note).catch(() => {}); // the Telegram card loses its buttons; a sent-back draft gets a new card when reworked
   (kind === 'approve' ? enqueueSend : enqueue)(() => runServerTask(task.id, kind === 'approve' ? { approve: true } : { feedback: note || 'Not this. Rework it.' }))
@@ -477,7 +477,7 @@ async function ownerDecides(id, kind, note = '') {
 function finishApproved(task) { delete task.approving; task.state = 'done'; task.doneAt = Date.now(); task.note = writeNote(task); }
 async function runServerTask(id, { feedback, approve, strict = false } = {}) {
   let list = load(); const task = list.find(t => t.id === id); if (!task) return null;
-  task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; if (approve) task.approving = true; save(list); // approving: a restart mid-send is closed out at startup (AC-15)
+  task.state = 'doing'; task.startedAt = Date.now(); delete task.ask; if (approve) { task.approving = true; task.sendStartedAt ||= Date.now(); } save(list); // approving: a restart mid-send is closed out at startup (AC-15) · sendStartedAt (spec 0007): a send began, never cleared, so a goal never offers RETRY on it
   const { usage: spent } = await meter.measure(async () => { try { // STORE: this run's tokens (draft, approve or rework) add to the task's total
     if (approve) { await approveRun(task, strict); finishApproved(task); await rebuildGraph(); }
     else {
@@ -656,9 +656,9 @@ async function chatReply(a, text, history) {
 /* ---------- STORE (spec 0005): the team on Telegram — eight bots, one owner, the office's own paths ---------- */
 const TG = telegram.settings(cfg); for (const w of TG.problems) console.warn('telegram:', w);
 let team = null;
-async function teamTask({ dept, text, title, needsOk, goal, by = 'telegram' }) { // a task the owner gave a bot (or the CEO planned), run on the server
+async function teamTask({ dept, text, title, needsOk, goal, goalPiece, goalContext, by = 'telegram' }) { // a task the owner gave a bot (or the CEO planned), run on the server · goalPiece, goalContext: spec 0007
   const { value: r, usage: routed } = await meter.measure(() => route(dept, text)); // STORE: routing is part of the task's tokens
-  const task = { id: nid(), dept, agent: r.agent, title: title || r.title, text, plan: r.plan, eta: r.eta, why: r.why, state: 'next', addedAt: Date.now(), by, asked: true, needsOk: typeof needsOk === 'boolean' ? needsOk : r.needsOk, ...(goal ? { goal } : {}), ...(routed.runs ? { usage: routed } : {}) };
+  const task = { id: nid(), dept, agent: r.agent, title: title || r.title, text, plan: r.plan, eta: r.eta, why: r.why, state: 'next', addedAt: Date.now(), by, asked: true, needsOk: typeof needsOk === 'boolean' ? needsOk : r.needsOk, ...(goal ? { goal } : {}), ...(goalPiece ? { goalPiece } : {}), ...(goalContext ? { goalContext } : {}), ...(routed.runs ? { usage: routed } : {}) };
   const list = load(); list.push(task); save(list);
   console.log(`📱 ${task.id} → ${task.agent}: ${task.title} (${by}${task.needsOk ? ', a draft' : ''})`);
   enqueue(() => runServerTask(task.id));

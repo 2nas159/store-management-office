@@ -156,13 +156,13 @@ spec [0006](../specs/0006-automations-screen.md) · code in `src/automations.js`
 
 ### 9. Sequential CEO goal steps · in-progress
 A CEO goal whose steps wait on each other: a step starts only when the steps before it are approved and fully sent, and it gets their results as fenced data. Every step stays a draft that waits for the owner; a doubtful send stops the chain and is never retried.
-spec [0007](../specs/0007-sequential-goal-steps.md) · code in `goalsteps.mjs`, `team.mjs`, `serve.mjs`, `approvals.mjs`, `triggers.mjs`, `check.mjs`
+spec [0007](../specs/0007-sequential-goal-steps/index.md) · code in `goalsteps.mjs`, `team.mjs`, `serve.mjs`, `approvals.mjs`, `triggers.mjs`, `check.mjs`
 **Done when:** a goal with an ordered plan starts each step only after its earlier steps are approved with every action done, hands their results on, offers RETRY only where nothing was sent, can be stopped, and heals after a missed notice or a restart.
 - [x] Design it (spec): `/architect sequential goal steps`
-- [ ] Build it: `/develop sequential goal steps`
-  - [ ] Green baseline, then the pure step logic and the fence (AC-1, AC-2, AC-4, AC-5, AC-9)
-  - [ ] Thread: one real two step chain on Telegram, the server fields, the rule skip (AC-3, AC-5, AC-6, AC-7, AC-10, AC-13)
-  - [ ] Failures, buttons, STOP, the tick, old goals, docs (AC-8, AC-9, AC-11, AC-12, AC-14, AC-15)
+- [x] Build it: `/develop sequential goal steps`
+  - [x] Green baseline, then the pure step logic and the fence (AC-1, AC-2, AC-4, AC-5, AC-9)
+  - [x] Thread: one real two step chain on Telegram, the server fields, the rule skip (AC-3, AC-5, AC-6, AC-7, AC-10, AC-13)
+  - [x] Failures, buttons, STOP, the tick, old goals, docs (AC-8, AC-9, AC-11, AC-12, AC-14, AC-15)
 - [ ] Verify it: `/check verify sequential goal steps`
 - [ ] Test it: `/test sequential goal steps`
 
