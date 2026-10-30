@@ -174,6 +174,7 @@ Out of scope for this build pass, kept so the plan stays honest.
 - **Approvable browser actions**: how an approved Chrome action is bounded (call budget, allowed site, final submit check) · needs a decision · from spec 0001
 - **Per action approval and retry**: untick single actions, and approve the not done remainder again, on the 0001 schema · from spec 0001
 - **Follow up tasks (`nextTask`)**: an approved task queues the next task for another department, for store event chains (order → quality check → fulfilment → post purchase email) · needs a decision · from spec 0007
+- **Run it on the owner's Oracle VPS**: the server listens on every interface and the API has no login (only `guard.mjs` stops other browser pages); before the move it needs a host setting (127.0.0.1 behind an SSH tunnel) or real auth, the firewall, and a process manager · needs a decision · from the 30 Oct review
 - **Goals on the page**: a running goal and its waiting steps shown outside Telegram · from spec 0007
 
 ## Legend
