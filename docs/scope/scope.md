@@ -22,7 +22,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 3 | Outbound action list on drafts | Slice 2 | in-progress |
 | 4 | Auto approve rules | Slice 3 | in-progress |
 | 5 | Gate the draft run | Slice 3 | in-progress |
-| 6 | Shopify event triggers | Slice 4 | in-progress |
+| 6 | Shopify event triggers | Slice 4 | done |
 | 7 | The team on Telegram | Slice 5 | in-progress |
 | 8 | The Automations screen | Slice 6 | in-progress |
 | 9 | Sequential CEO goal steps | Slice 7 | in-progress |
@@ -109,7 +109,7 @@ spec [0003](../specs/0003-gate-the-draft-run.md) · code in `src/toolclass.js`, 
 
 ## Slice 4: The store starts the work
 
-### 6. Shopify event triggers · GA
+### 6. Shopify event triggers · GA · done
 A new order, low stock, a return request, a cancellation or a refund in the store starts the right draft within minutes, through the same read-only gate, action list and rules as routines. The office polls the Admin API with its own read-only app; customer free text stays out of the prompt by default.
 spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `triggers.mjs`, `serve.mjs`, `src/tasks.js`, `check.mjs`
 **Done when:** each of the five events, set in triggers.json, starts one batched task per check within its daily cap; nothing starts twice or on the first check; the office's Shopify access is read-only and checked; a problem with Shopify shows in plain words in the panel.
@@ -121,8 +121,8 @@ spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `
   - [x] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)
 - [x] Verify it: `/check verify shopify event triggers` (25 Oct, real store: a stock change → one task, structured text only, read-only draft)
 - [x] Test it: `/test shopify event triggers` (30 Oct: the store check moved to `triggers.check` and `triggers.taskFields`; backoff, cursor, write scope, task fields and the token's home now have steps; 109/109)
-- [ ] Review it: `/check review shopify event triggers`
-- [ ] Document it: `/document shopify event triggers`
+- [x] Review it: `/check review shopify event triggers` (in session, 30 Oct: not a fresh-context review; found that any web page could change the office through the API, fixed with `guard.mjs` for every endpoint; noted: a return still REQUESTED after 30 days can start again, a rule's `routines` matches a trigger of the same id)
+- [x] Document it: `/document shopify event triggers` (README: backoff, write scope, the API guard)
 
 ## Slice 5: Run it from your phone
 

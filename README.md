@@ -270,6 +270,9 @@ becomes one task, capped per day, run like a routine draft. Customer-written tex
 the task unless the trigger opts in. The first check records where the store stands and starts
 nothing; a new trigger starts from when it is added. `node triggers.mjs` tests the connection
 without starting anything; the triggers and the store's status show under the **Scheduled** chip.
+When Shopify does not answer, the office waits 5, then 15, 30 and 60 minutes, says why once on
+the Shopify line, and picks up every event it missed when the store answers again. An app with a
+`write_*` scope is never polled until that scope is removed.
 
 The team is on Telegram too: eight bots, each its own contact. The **secretary** brings every
 draft that waits for you, with its action list and APPROVE / REJECT (a second tap when it moves
@@ -479,3 +482,7 @@ plus the agent's brief, skills and standing rules from your corrections).
 When an agent calls a connector, that call goes to that service through your own Claude Code
 login, exactly as it would if you called it yourself. Nothing else leaves your machine.
 Deliverables are saved locally.
+
+The office's API has no login. So that another site open in your browser cannot add a task,
+approve a draft or switch a rule back on, a change that comes from any page but the office's own
+(`http://localhost:<port>` or `http://127.0.0.1:<port>`) is refused (`guard.mjs`).

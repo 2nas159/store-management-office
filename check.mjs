@@ -843,6 +843,13 @@ await step('triggers: a failed check backs off 5, 15, 30, 60 min, says why once 
   if (!/write_orders/.test(ws.error || '') || queries.length !== nq || (st.backoffUntil - clock) !== 3600e3) throw new Error('a write scope must stop the check before any read, for an hour: ' + JSON.stringify({ error: ws.error, read: queries.length - nq, wait: (st.backoffUntil - clock) / 60000 }));
   return `waits ${waits.join(', ')} min · said once · cursor kept · inside the backoff skipped, RUN NOW checks · #2001 from the outage starts after · write scope: no read, 60 min`;
 });
+await step('guard: a change from another web page is refused; reads, the office\'s own page and non-browser callers pass', async () => { // STORE (30 Oct 2026)
+  const { refuse } = await import('./guard.mjs'), q = (method, headers) => refuse({ method, headers }, 4520);
+  const no = [q('POST', { origin: 'https://evil.example' }), q('DELETE', { 'sec-fetch-site': 'cross-site' }), q('POST', { 'sec-fetch-site': 'same-site', origin: 'http://localhost:4520' }), q('POST', { origin: 'null' }), q('POST', { origin: 'http://localhost:3000' }), q('POST', { origin: 'https://localhost:4520' })];
+  const yes = [q('GET', { origin: 'https://evil.example' }), q('POST', {}), q('POST', { origin: 'http://localhost:4520', 'sec-fetch-site': 'same-origin' }), q('POST', { origin: 'http://127.0.0.1:4520' }), q('DELETE', { 'sec-fetch-site': 'none' })];
+  if (no.some(x => !x) || yes.some(x => x)) throw new Error(JSON.stringify({ no, yes }));
+  return `${no.length} foreign changes refused in plain words · ${yes.length} allowed (reads, no browser, the office's own page)`;
+});
 await step('triggers: a trigger task is a draft unless it only reads, carries its trigger and events, and its note names both; only shopify.mjs holds the store\'s token', async () => { // AC-6, AC-7 (STORE, 30 Oct 2026)
   const T = await import('./triggers.mjs'); const { loadRoster } = await import('./roster.mjs'); const agents = loadRoster().agents;
   const ev = [{ key: 'order_created:gid://shopify/Order/1', line: 'order #1' }, { key: 'order_created:gid://shopify/Order/2', line: 'order #2' }];
@@ -1740,6 +1747,13 @@ else {
       } finally { for (const f of [RT, TF, RF]) fs.rmSync(f, { force: true }); }
     });
     await step('server: rejects an empty task', async () => { const r = await fetch(base + '/api/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"dept":"sales","text":""}' }); if (r.status !== 400) throw new Error('status ' + r.status); });
+    await step('server: another web page cannot add a task, approve a draft or switch a rule back on; the office\'s own page can', async () => { // STORE (30 Oct 2026)
+      const own = new URL(base).origin, hit = (p, h, b = '{"dept":"sales","text":""}') => fetch(base + p, { method: 'POST', headers: { 'content-type': 'text/plain', ...h }, body: b }).then(r => r.status);
+      const evil = [await hit('/api/tasks', { origin: 'https://evil.example' }), await hit('/api/tasks', { 'sec-fetch-site': 'cross-site' }), await hit('/api/tasks/nope/approve', { origin: 'null' }, ''), await hit('/api/approvals/nope/resume', { origin: 'http://localhost:3000' }, '')];
+      if (evil.some(s => s !== 403)) throw new Error('a foreign page got through: ' + evil.join(','));
+      const mine = await hit('/api/tasks', { origin: own, 'sec-fetch-site': 'same-origin' }); if (mine !== 400) throw new Error('the office\'s own page was refused: ' + mine);
+      return `foreign origin, cross-site, a null origin, another localhost port → 403 · ${own} passes`;
+    });
     if (chromium) await step('server: the served office shows real work only — no demo tasks or counters — and keeps the connector bar short', async () => { // STORE (25 Oct 2026)
       let browser; try { browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] }); } catch { browser = await chromium.launch({ channel: 'chrome' }); }
       try {

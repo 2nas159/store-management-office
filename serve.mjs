@@ -59,6 +59,7 @@ import * as triggers from './triggers.mjs'; // STORE (25 Oct 2026): store events
 import * as telegram from './telegram.mjs'; // STORE (25 Oct 2026): the team on Telegram (spec 0005)
 import { createTeam } from './team.mjs';
 import { lane } from './lanes.mjs'; // STORE (30 Oct 2026): the work lane and the send lane
+import { refuse } from './guard.mjs'; // STORE (30 Oct 2026): no other web page may change the office
 import * as meter from './meter.mjs'; // STORE (25 Oct 2026): tokens per task, per chat turn and per Telegram message
 import { fromRun, add as addTokens, tokensText } from './src/tokens.js';
 import { normModel, modelFor, modelArgs, modelId, modelName, MODEL_KEYS, DEFAULT_MODEL, normEffort, effortFor, effortName, EFFORT_KEYS } from './src/models.js';
@@ -676,6 +677,7 @@ const agentsOut = () => { const setup = setupMap(); return AGENTS.map(a => ({ id
   interviewer: leadOf(a.department).id === a.id, setUp: setup[a.department] })); };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  const no = refuse(req, cfg.port); if (no) { console.warn('⛔', req.method, url.pathname, '—', no); return json(res, 403, { error: no }); } // STORE (30 Oct 2026)
   try {
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/command-centre-v2.html' || url.pathname === '/dark')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
