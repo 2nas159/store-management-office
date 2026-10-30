@@ -513,7 +513,7 @@ const TSTATE = triggers.loadState(DATA);
 let checking = false;
 const loadTriggers = () => triggers.load(BRAIN, AGENTS);
 function fireTrigger(t, events) { // one task for the whole batch, run like a routine draft
-  const task = { id: nid(), dept: t.dept, agent: t.agent, title: t.title, text: triggers.taskText(t, events), plan: [], eta: 15, why: '', state: 'next', addedAt: Date.now(), by: 'trigger', trigger: t.id, events: events.map(e => e.key), when: triggers.describe(t), needsOk: t.needsOk };
+  const task = { id: nid(), ...triggers.taskFields(t, events), plan: [], eta: 15, why: '', state: 'next', addedAt: Date.now() };
   const list = load(); list.push(task); save(list);
   console.log(`🛍 ${task.id} → ${task.agent}: ${task.title} (${events.length} event${events.length === 1 ? '' : 's'}, ${task.when})`);
   enqueue(() => runServerTask(task.id));
@@ -523,28 +523,11 @@ async function checkStore({ runNow = null, force = false } = {}) {
   if (!SHOP.on || checking || process.env.AO_NO_STORE === '1') return { skipped: true }; // AO_NO_STORE: RUN NOW too
   const doc = loadTriggers(); if (!doc.triggers.length) return { skipped: true };
   if (!force && Date.now() < TSTATE.backoffUntil) return { skipped: true };
-  checking = true; TSTATE.lastCheck = Date.now(); let fired = [];
-  try {
-    const sc = await shopify.scopes(SHOP);
-    if (sc.write.length) throw Object.assign(new Error(`the office's Shopify app has scopes that are not read-only (${sc.write.join(', ')}): remove them in the Dev Dashboard, release the version and approve it on the store`), { retry: false });
-    let orders = null, maxUpdated = null, variants = null;
-    if (doc.triggers.some(t => t.event !== 'stock_low')) {
-      orders = []; let after = null; const since = new Date(TSTATE.cursor ? Date.parse(TSTATE.cursor) - 2 * 60000 : Date.now()).toISOString();
-      for (let page = 0; page < 5; page++) { const d = await shopify.query(SHOP, triggers.ORDERS_Q(doc.triggers.some(t => t.customerText)), { q: `updated_at:>'${since}'`, after }); orders.push(...d.orders.nodes); if (!d.orders.pageInfo.hasNextPage) break; after = d.orders.pageInfo.endCursor; }
-      for (const o of orders) if (!maxUpdated || o.updatedAt > maxUpdated) maxUpdated = o.updatedAt;
-    }
-    const stockT = doc.triggers.filter(t => t.event === 'stock_low');
-    if (stockT.length) variants = (await shopify.query(SHOP, triggers.STOCK_Q, { q: `inventory_quantity:<=${Math.max(...stockT.map(t => t.below))}` })).productVariants.nodes;
-    const r = triggers.step({ triggers: doc.triggers, state: TSTATE, orders, variants, maxUpdated, runNow });
-    if (TSTATE.problem) console.log('🛍 shopify: back');
-    Object.assign(TSTATE, { lastOk: Date.now(), problem: null, fails: 0, backoffUntil: 0 });
-    if (r.first) console.log('🛍 store connected: the first check recorded where things stand and started nothing');
-    fired = r.fires.map(f => fireTrigger(f.trigger, f.events));
-  } catch (e) { // back off 5 → 15 → 30 → 60 min; a problem that will not go away by itself waits an hour; the cursor does not move
-    TSTATE.fails = (TSTATE.fails || 0) + 1; const mins = e.retry ? [5, 15, 30, 60][Math.min(TSTATE.fails - 1, 3)] : 60;
-    if (TSTATE.problem !== e.message) console.warn('🛍 shopify:', e.message);
-    Object.assign(TSTATE, { problem: e.message, backoffUntil: Date.now() + mins * 60000 });
-  } finally { triggers.saveState(DATA, TSTATE); checking = false; }
+  checking = true; let fired = [];
+  try { // the check itself, its backoff and the cursor live in triggers.check (STORE, 30 Oct 2026)
+    const r = await triggers.check({ shop: SHOP, doc, state: TSTATE, S: shopify, runNow, force });
+    fired = (r.fires || []).map(f => fireTrigger(f.trigger, f.events));
+  } catch (e) { console.warn('🛍 could not start a trigger task:', e.message); } finally { triggers.saveState(DATA, TSTATE); checking = false; }
   return { fired };
 }
 const triggersOut = () => { const d = loadTriggers(); return { triggers: d.triggers.map(t => ({ ...t, desc: triggers.describe(t), today: TSTATE.day === triggers.dayKey(Date.now()) ? (TSTATE.counts[t.id] || 0) : 0, held: (TSTATE.held[t.id] || []).length })), problems: [...SHOP.problems, ...d.problems], path: d.path,

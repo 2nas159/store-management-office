@@ -818,6 +818,46 @@ await step('triggers: customer-written text stays out of the task unless the tri
   if (T.step({ triggers: [low], state: st2, orders: null, variants: odd, now: at }).fires.length) throw new Error('untracked stock, a gift card or a product not on sale counted as low');
   return 'note and typed reasons left out · reason codes kept · opted in: fenced, a ``` in it cannot break out · stock 4 → once, 3 → quiet, recovered, 4 → again';
 });
+await step('triggers: a failed check backs off 5, 15, 30, 60 min, says why once and keeps the cursor; a write scope stops it for an hour; the next good check loses nothing', async () => { // AC-1, AC-9 (STORE, 30 Oct 2026)
+  const T = await import('./triggers.mjs'); const { loadRoster } = await import('./roster.mjs'); const agents = loadRoster().agents;
+  const doc = { triggers: [T.validate({ id: 'orders', event: 'order_created', dept: 'delivery', text: 'Do it.' }, agents).trigger] };
+  const cursor = '2026-10-25T09:00:00.000Z', st = { cursor, seen: {}, low: {}, added: { orders: Date.parse(cursor) - 3600e3 }, day: null, counts: {}, held: {}, stale: [], problem: null, fails: 0, backoffUntil: 0 };
+  let clock = Date.parse(cursor) + 60e3, down = true, write = [], queries = [];
+  const warned = [], said = [], log = { log: m => said.push(m), warn: (...m) => warned.push(m.join(' ')) }, now = () => clock;
+  const S = { scopes: async () => ({ scopes: ['read_orders', ...write], write }),
+    query: async (s, q, v) => { queries.push(v.q); if (down) throw Object.assign(new Error('Shopify did not answer (503)'), { retry: true });
+      return { orders: { nodes: [ORD(2001, { createdAt: new Date(Date.parse(cursor) + 120e3).toISOString() })], pageInfo: { hasNextPage: false } } }; } };
+  const run = (o = {}) => T.check({ shop: {}, doc, state: st, S, now, log, ...o });
+  const waits = [];
+  for (let i = 0; i < 5; i++) { const r = await run(); if (!r.error) throw new Error('a failed check did not say so'); waits.push((st.backoffUntil - clock) / 60000); clock = st.backoffUntil; }
+  if (waits.join() !== '5,15,30,60,60') throw new Error('backoff in minutes: ' + waits.join());
+  if (warned.length !== 1 || !/did not answer/.test(st.problem)) throw new Error(`the reason should be said once and kept: ${warned.length} warnings · ${st.problem}`);
+  if (st.cursor !== cursor) throw new Error('the cursor moved on a failed check');
+  st.backoffUntil = clock + 60e3; if (!(await run()).skipped) throw new Error('a check inside the backoff ran');
+  if ((await run({ force: true })).skipped) throw new Error('RUN NOW (force) must check inside the backoff');
+  down = false; clock += 120e3; const ok = await run({ force: true });
+  if (ok.fires?.[0]?.events?.[0]?.order !== '#2001' || st.problem || st.fails || st.backoffUntil) throw new Error('the order from the outage did not start, or the problem stayed: ' + JSON.stringify({ fires: ok.fires?.length, problem: st.problem, fails: st.fails }));
+  if (!queries.every(q => q === `updated_at:>'2026-10-25T08:58:00.000Z'`)) throw new Error('a check did not read from the old cursor: ' + [...new Set(queries)].join(' | '));
+  if (!said.some(m => /shopify: back/.test(m))) throw new Error('coming back was not said');
+  write = ['write_orders']; const nq = queries.length; clock = st.backoffUntil + 1; const ws = await run();
+  if (!/write_orders/.test(ws.error || '') || queries.length !== nq || (st.backoffUntil - clock) !== 3600e3) throw new Error('a write scope must stop the check before any read, for an hour: ' + JSON.stringify({ error: ws.error, read: queries.length - nq, wait: (st.backoffUntil - clock) / 60000 }));
+  return `waits ${waits.join(', ')} min · said once · cursor kept · inside the backoff skipped, RUN NOW checks · #2001 from the outage starts after · write scope: no read, 60 min`;
+});
+await step('triggers: a trigger task is a draft unless it only reads, carries its trigger and events, and its note names both; only shopify.mjs holds the store\'s token', async () => { // AC-6, AC-7 (STORE, 30 Oct 2026)
+  const T = await import('./triggers.mjs'); const { loadRoster } = await import('./roster.mjs'); const agents = loadRoster().agents;
+  const ev = [{ key: 'order_created:gid://shopify/Order/1', line: 'order #1' }, { key: 'order_created:gid://shopify/Order/2', line: 'order #2' }];
+  const d = T.taskFields(T.validate({ id: 'orders', event: 'order_created', dept: 'delivery', text: 'Do it.' }, agents).trigger, ev);
+  const r = T.taskFields(T.validate({ id: 'report', event: 'order_created', dept: 'ops', text: 'List them.', needsOk: false }, agents).trigger, ev);
+  if (d.needsOk !== true || r.needsOk !== false || d.asked || r.asked || d.by !== 'trigger' || d.trigger !== 'orders' || d.events.join() !== ev.map(e => e.key).join() || !/EVENTS FROM THE STORE \(2;/.test(d.text)) throw new Error('task fields: ' + JSON.stringify({ ...d, text: d.text.slice(0, 60) }));
+  const src = fs.readFileSync(path.join(ROOT, 'serve.mjs'), 'utf8');
+  if (!/task\.needsOk \? 'draft' : task\.asked \? undefined : 'routine'/.test(src)) throw new Error('serve.mjs no longer runs a needsOk task as a draft and the rest as a read-only routine');
+  if (!/\.\.\.triggers\.taskFields\(t, events\)/.test(src)) throw new Error('fireTrigger does not build its task from triggers.taskFields');
+  if (!/'\\ntrigger: ' \+ task\.trigger \+ .*task\.events/.test(src)) throw new Error('the note front matter no longer names the trigger and its events');
+  const files = [...fs.readdirSync(ROOT).filter(f => /\.mjs$/.test(f) && f !== 'check.mjs'), ...fs.readdirSync(path.join(ROOT, 'src')).filter(f => /\.js$/.test(f)).map(f => 'src/' + f)];
+  const touch = files.filter(f => /x-shopify-access-token|oauth\/access_token/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+  if (touch.join() !== 'shopify.mjs') throw new Error('the store\'s token is handled outside shopify.mjs: ' + touch.join(', '));
+  return `draft by default, needsOk false → read-only · trigger + ${d.events.length} event ids · note names both · token only in shopify.mjs (${files.length} files read)`;
+});
 
 /* ---------- 1j. the team on Telegram (STORE, spec 0005) — a fake Telegram, no network ---------- */
 const TOK = r => `${100000 + ['secretary', 'ceo', 'emails', 'sales', 'marketing', 'ops', 'fin', 'delivery'].indexOf(r)}:AAH${r.padEnd(30, 'x')}`;
@@ -1296,7 +1336,10 @@ else {
       await until(() => document.querySelectorAll('.cv-ev.routine').length >= 3);
       const cells = await page.$$eval('.cv-day', e => e.length); if (cells !== 35 && cells !== 42) throw new Error('month cells: ' + cells);
       if (!await page.$('.cv-day.today')) throw new Error('no today cell');
-      const rt = await page.$$eval('.cv-ev.routine', e => e.length); if (rt < 3) throw new Error('routine occurrences on the grid: ' + rt);
+      // STORE (30 Oct 2026): in the last days of a month this grid holds only a few days still ahead, so count next month's and come back with T
+      let rt = await page.$$eval('.cv-ev.routine', e => e.length);
+      if (rt < 3) { await page.keyboard.press('ArrowRight'); await until(() => !document.querySelector('.cv-day.today') && document.querySelectorAll('.cv-ev.routine').length >= 3); rt = await page.$$eval('.cv-ev.routine', e => e.length); await page.keyboard.press('t'); await until(() => !!document.querySelector('.cv-day.today')); }
+      if (rt < 3) throw new Error('routine occurrences on the grid: ' + rt);
       const rail = await page.$eval('#cvRtN', e => +e.textContent); if (rail < 1) throw new Error('rail empty');
       // a task for a day next week (the second day after today on the grid)
       const days = await page.$$eval('.cv-day', els => els.map(e => e.dataset.day)); const ti = days.indexOf(await page.$eval('.cv-day.today', e => e.dataset.day));

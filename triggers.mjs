@@ -144,6 +144,40 @@ export function step({ triggers, state, orders, variants, maxUpdated, now = Date
   return { fires, state: st, first: false };
 }
 
+/** One check against the store (AC-1, AC-9): the scopes first, then orders and stock, then step(). S is shopify.mjs (or a fake).
+ *  A failure backs off 5 → 15 → 30 → 60 min (an hour when it will not pass by itself, like a write scope), says why once,
+ *  and moves no cursor. → { skipped } · { fires, first } · { fires: [], error } — the caller starts the tasks and saves the state. */
+export const BACKOFF = [5, 15, 30, 60];
+export async function check({ shop, doc, state, S, runNow = null, force = false, now = Date.now, log = console }) { // STORE (30 Oct 2026): moved out of serve.mjs so it can be tested
+  if (!force && now() < state.backoffUntil) return { skipped: true };
+  state.lastCheck = now();
+  try {
+    const sc = await S.scopes(shop);
+    if (sc.write.length) throw Object.assign(new Error(`the office's Shopify app has scopes that are not read-only (${sc.write.join(', ')}): remove them in the Dev Dashboard, release the version and approve it on the store`), { retry: false });
+    let orders = null, maxUpdated = null, variants = null;
+    if (doc.triggers.some(t => t.event !== 'stock_low')) {
+      orders = []; let after = null; const since = new Date(state.cursor ? Date.parse(state.cursor) - OVERLAP : now()).toISOString();
+      for (let page = 0; page < 5; page++) { const d = await S.query(shop, ORDERS_Q(doc.triggers.some(t => t.customerText)), { q: `updated_at:>'${since}'`, after }); orders.push(...d.orders.nodes); if (!d.orders.pageInfo.hasNextPage) break; after = d.orders.pageInfo.endCursor; }
+      for (const o of orders) if (!maxUpdated || o.updatedAt > maxUpdated) maxUpdated = o.updatedAt;
+    }
+    const stockT = doc.triggers.filter(t => t.event === 'stock_low');
+    if (stockT.length) variants = (await S.query(shop, STOCK_Q, { q: `inventory_quantity:<=${Math.max(...stockT.map(t => t.below))}` })).productVariants.nodes;
+    const r = step({ triggers: doc.triggers, state, orders, variants, maxUpdated, now: now(), runNow });
+    if (state.problem) log.log('🛍 shopify: back');
+    Object.assign(state, { lastOk: now(), problem: null, fails: 0, backoffUntil: 0 });
+    if (r.first) log.log('🛍 store connected: the first check recorded where things stand and started nothing');
+    return { fires: r.fires, first: r.first };
+  } catch (e) {
+    state.fails = (state.fails || 0) + 1; const mins = e.retry ? BACKOFF[Math.min(state.fails - 1, BACKOFF.length - 1)] : 60;
+    if (state.problem !== e.message) log.warn('🛍 shopify:', e.message);
+    Object.assign(state, { problem: e.message, backoffUntil: now() + mins * 60000 });
+    return { fires: [], error: e.message };
+  }
+}
+
+/** What a trigger task carries (AC-6): a draft unless needsOk is false (then a read-only report, like a routine), its trigger and its events */
+export const taskFields = (t, events) => ({ dept: t.dept, agent: t.agent, title: t.title, text: taskText(t, events), by: 'trigger', trigger: t.id, events: events.map(e => e.key), when: describe(t), needsOk: t.needsOk });
+
 /** The task a trigger starts: its text, then the events as structured fields (and the customer's words only when it opts in, fenced as data) */
 export function taskText(t, events) {
   const words = t.customerText ? events.flatMap(e => e.words || []) : [];

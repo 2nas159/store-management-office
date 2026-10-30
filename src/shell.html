@@ -66,7 +66,8 @@
     border: 1px solid var(--hairline); border-radius: 99px; padding: 4px 10px;
   }
   #topbar .sp { flex: 1; }
-  #clock { font-family: var(--serif); font-size: 20px; font-variant-numeric: tabular-nums; }
+  #clock { font-family: var(--serif); font-size: 20px; font-variant-numeric: tabular-nums;
+    display: inline-block; min-width: 120px; text-align: right; } /* STORE (30 Oct 2026): the serif's digits are not all one width, so the clock held still keeps the buttons beside it still */
 
   #overviewBtn {
     position: fixed; top: 66px; left: 20px; z-index: 23; /* V3: above the dept board */

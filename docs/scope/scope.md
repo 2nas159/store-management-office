@@ -120,7 +120,7 @@ spec [0004](../specs/0004-shopify-event-triggers.md) · code in `shopify.mjs`, `
   - [x] The other events: orders created, cancelled, refunded; low stock; first check; catch-up (AC-2)
   - [x] What the owner sees: triggers under Scheduled, the Shopify line, endpoints, lead chat, docs (AC-8)
 - [x] Verify it: `/check verify shopify event triggers` (25 Oct, real store: a stock change → one task, structured text only, read-only draft)
-- [ ] Test it: `/test shopify event triggers`
+- [x] Test it: `/test shopify event triggers` (30 Oct: the store check moved to `triggers.check` and `triggers.taskFields`; backoff, cursor, write scope, task fields and the token's home now have steps; 109/109)
 - [ ] Review it: `/check review shopify event triggers`
 - [ ] Document it: `/document shopify event triggers`
 
