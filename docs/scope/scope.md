@@ -26,6 +26,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 7 | The team on Telegram | Slice 5 | in-progress |
 | 8 | The Automations screen | Slice 6 | in-progress |
 | 9 | Sequential CEO goal steps | Slice 7 | in-progress |
+| 10 | Token and cost ledger | Slice 8 | in-progress |
 
 ## Already there
 
@@ -166,6 +167,22 @@ spec [0007](../specs/0007-sequential-goal-steps/index.md) · code in `goalsteps.
 - [ ] Verify it: `/check verify sequential goal steps`
 - [ ] Test it: `/test sequential goal steps`
 
+## Slice 8: Know what it costs
+
+### 10. Token and cost ledger · in-progress
+Every Claude run is counted once in a daily ledger, split by desk, routine, trigger, kind of work and model, with a dollar figure at API list price (labelled as not the subscription bill). Shown in the usage gauge popover, on the Automations screen, in the desk chat, and in the Telegram morning and weekly briefs. It never stops work.
+spec [0008](../specs/0008-token-cost-ledger.md) · code in `costs.mjs`, `meter.mjs`, `src/tokens.js`, `src/prices.js`, `serve.mjs`, `team.mjs`, `src/mcp.js`, `src/automations.js`, `check.mjs`
+**Done when:** every run lands once in `data/costs/` with the right desk, routine, trigger, kind and model, the splits add up to the total, dollars show from the CLI or the price table and are always labelled, and the gauge, Automations, desk chat and both briefs show it.
+- [x] Design it (spec): `/architect token and cost ledger`
+- [ ] Build it: `/develop token and cost ledger`
+  - [ ] Thin thread: dollars into `bumpUsage`, `costs.mjs`, `/api/costs`, today in the gauge popover (AC-1, AC-2, AC-5, AC-7)
+  - [ ] Tags everywhere and runs without a result (AC-3, AC-4, AC-8)
+  - [ ] SDK prices, task and chat dollar lines (AC-6, AC-9)
+  - [ ] The page: full popover, Automations rows, desk header (AC-10, AC-11, AC-12)
+  - [ ] Telegram briefs, retention, broken files, check steps (AC-13 to AC-17)
+- [ ] Verify it: `/check verify token and cost ledger`
+- [ ] Test it: `/test token and cost ledger`
+
 ## Deferred
 Out of scope for this build pass, kept so the plan stays honest.
 - **Store numbers panel**: revenue, average order, conversion, low stock and open tickets from Shopify in the office · needs a decision
@@ -176,6 +193,8 @@ Out of scope for this build pass, kept so the plan stays honest.
 - **Follow up tasks (`nextTask`)**: an approved task queues the next task for another department, for store event chains (order → quality check → fulfilment → post purchase email) · needs a decision · from spec 0007
 - **Run it on the owner's Oracle VPS**: the server listens on every interface and the API has no login (only `guard.mjs` stops other browser pages); before the move it needs a host setting (127.0.0.1 behind an SSH tunnel) or real auth, the firewall, and a process manager · needs a decision · from the 30 Oct review
 - **Goals on the page**: a running goal and its waiting steps shown outside Telegram · from spec 0007
+- **Daily spend warning**: a message when a day passes a set $ at API prices, decided after a week of real ledger data · from spec 0008
+- **The owner's own Claude Code sessions in the office**: a read only view of sessions opened outside the office (the ajan-ofisi idea) · needs a decision · from spec 0008
 
 ## Legend
 
